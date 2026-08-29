@@ -8,7 +8,18 @@ import {
   sendNotification,
 } from "@tauri-apps/plugin-notification";
 import { toast } from "sonner";
-import { addTargets, pauseAll, resumeAll, tellStatus, toastError } from "./actions";
+import {
+  abortRedundantIntegrityCheck,
+  addTargets,
+  pauseAll,
+  persistSkipIntegrity,
+  resumeAll,
+  retryTask,
+  tellStatus,
+  toastError,
+} from "./actions";
+import { isRedundantIntegrityCheck } from "./integrity";
+import { isRecoverableDirError } from "./retry";
 import { formatSpeed, taskName } from "./format";
 import { t } from "./i18n";
 import { onAria2Notification, useAppStore } from "@/store/app";
@@ -34,7 +45,8 @@ function formatDockSpeed(value: number): string {
 async function handleTargets(targets: string[]): Promise<void> {
   if (targets.length === 0) return;
   try {
-    const added = await addTargets(targets);
+    const { added, resumed } = await addTargets(targets);
+    if (resumed > 0) toast.success(t("add.continued", { count: resumed }));
     if (added > 0) toast.success(t("add.added", { count: added }));
   } catch (error) {
     toastError(error);
@@ -139,7 +151,7 @@ function wireClipboard(): Cleanup {
 
     const alreadyQueued = useAppStore
       .getState()
-      .tasks.some((task) => task.files[0]?.uris[0]?.uri === text);
+      .tasks.some((task) => task.files?.[0]?.uris[0]?.uri === text);
     if (alreadyQueued) return;
 
     toast(t("clipboard.found"), {
@@ -152,6 +164,81 @@ function wireClipboard(): Cleanup {
   }, CLIPBOARD_INTERVAL);
 
   return () => clearInterval(timer);
+}
+
+/**
+ * After the first createInitialCommand, persist check-integrity=false so the
+ * next unpause or app launch trusts the *.aria2 bitfield instead of re-hashing.
+ */
+function wireSkipIntegrityAfterStart(): Cleanup {
+  return onAria2Notification((method, gid) => {
+    if (method !== "aria2.onDownloadStart" && method !== "aria2.onDownloadPause") {
+      return;
+    }
+    void persistSkipIntegrity(gid).catch(() => {
+      // Task may have finished or been removed before the option write.
+    });
+  });
+}
+
+/** Remount/unpause re-hashes still in flight: stop them and continue. */
+function wireRedundantIntegritySkip(): Cleanup {
+  const inFlight = new Set<string>();
+  const failed = new Set<string>();
+
+  const scan = (tasks: ReturnType<typeof useAppStore.getState>["tasks"]) => {
+    const pausedByUser = useAppStore.getState().pausedByUserGids;
+    for (const task of tasks) {
+      if (!isRedundantIntegrityCheck(task)) continue;
+      if (pausedByUser.includes(task.gid)) continue;
+      if (inFlight.has(task.gid) || failed.has(task.gid)) continue;
+      inFlight.add(task.gid);
+      void abortRedundantIntegrityCheck(task)
+        .catch(() => {
+          failed.add(task.gid);
+        })
+        .finally(() => {
+          inFlight.delete(task.gid);
+        });
+    }
+  };
+
+  scan(useAppStore.getState().tasks);
+  return useAppStore.subscribe((state) => scan(state.tasks));
+}
+
+/**
+ * After a removable volume comes back, retry tasks that failed with
+ * permission-denied / missing-directory errors.
+ */
+function wireDirErrorRecovery(): Cleanup {
+  const inFlight = new Set<string>();
+  const budget = new Map<string, number>();
+
+  const scan = (tasks: ReturnType<typeof useAppStore.getState>["tasks"]) => {
+    for (const task of tasks) {
+      if (task.status !== "error") continue;
+      if (!isRecoverableDirError(task.errorMessage)) continue;
+      const key = `${task.infoHash ?? task.gid}:${task.dir}`;
+      if (inFlight.has(key) || (budget.get(key) ?? 0) >= 2) continue;
+      inFlight.add(key);
+      void invoke<boolean>("dir_is_writable", { path: task.dir })
+        .then((writable) => {
+          if (!writable) return;
+          budget.set(key, (budget.get(key) ?? 0) + 1);
+          return retryTask(task, { promptForDir: false });
+        })
+        .catch(() => {
+          // Volume still locked or retry failed; wait for the next scan.
+        })
+        .finally(() => {
+          inFlight.delete(key);
+        });
+    }
+  };
+
+  scan(useAppStore.getState().tasks);
+  return useAppStore.subscribe((state) => scan(state.tasks));
 }
 
 /** Notify once per finished download. */
@@ -256,6 +343,9 @@ export async function initIntegrations(): Promise<Cleanup> {
     wireDragDrop(),
     Promise.resolve(wireClipboard()),
     Promise.resolve(wireCompletionNotices()),
+    Promise.resolve(wireSkipIntegrityAfterStart()),
+    Promise.resolve(wireRedundantIntegritySkip()),
+    Promise.resolve(wireDirErrorRecovery()),
     Promise.resolve(wireSettingsSync()),
     Promise.resolve(wireStatusIndicators()),
   ]);

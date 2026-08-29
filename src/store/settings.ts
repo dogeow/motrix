@@ -7,6 +7,8 @@ import {
   normalizeUploadSpeedLimit,
   speedLimitToAria2,
 } from "@/lib/speed-limit";
+import { pausedGids, SKIP_INTEGRITY_OPTION } from "@/lib/integrity";
+import { TASK_GID_KEYS, TASK_PAUSE_KEYS } from "@/lib/rpc-keys";
 import type { Aria2Options, Aria2Task } from "@/lib/types";
 
 export type ThemeMode = "system" | "light" | "dark";
@@ -86,9 +88,9 @@ export function taskOptions(settings: Settings, trackers: string): Aria2Options 
     "max-connection-per-server": String(settings.maxConnectionPerServer),
     "seed-ratio": String(settings.seedRatio),
     ...taskSpeedOptions(settings),
-    // BT only: when the payload already exists but no *.aria2 control file is
-    // present, piece-hash in place and continue. Do NOT set allow-overwrite —
-    // that option can truncate existing files on non-BT downloads.
+    // One-shot for new BT tasks: piece-hash existing files when there is no
+    // *.aria2 control file (Folx-style resume). Pause/unpause then turns this
+    // off so remounting a disk does not re-verify the whole torrent.
     "check-integrity": "true",
   };
   if (settings.downloadDir) options.dir = settings.downloadDir;
@@ -117,8 +119,8 @@ async function applySpeedLimitsToTasks(settings: Settings): Promise<void> {
   const client = aria2();
   const speed = taskSpeedOptions(settings);
   const [active, waiting] = await Promise.all([
-    client.call<Aria2Task[]>("tellActive"),
-    client.call<Aria2Task[]>("tellWaiting", 0, MAX_LISTED),
+    client.call<Aria2Task[]>("tellActive", TASK_GID_KEYS),
+    client.call<Aria2Task[]>("tellWaiting", 0, MAX_LISTED, TASK_GID_KEYS),
   ]);
   await Promise.all(
     [...active, ...waiting].map((task) =>
@@ -127,6 +129,25 @@ async function applySpeedLimitsToTasks(settings: Settings): Promise<void> {
       })
     )
   );
+}
+
+/** Session-restored paused tasks still carry check-integrity=true from add. */
+async function skipIntegrityOnPausedTasks(): Promise<void> {
+  const client = aria2();
+  const waiting = await client.call<Aria2Task[]>(
+    "tellWaiting",
+    0,
+    MAX_LISTED,
+    TASK_PAUSE_KEYS
+  );
+  const gids = pausedGids(waiting);
+  if (gids.length === 0) return;
+  await Promise.all(
+    gids.map((gid) =>
+      client.call("changeOption", gid, SKIP_INTEGRITY_OPTION).catch(() => {})
+    )
+  );
+  await client.call("saveSession").catch(() => {});
 }
 
 interface SettingsState {
@@ -181,6 +202,7 @@ export const useSettingsStore = create<SettingsState>((set, get) => ({
     // session-restored downloads cannot keep a stale unlimited ceiling.
     try {
       await applySpeedLimitsToTasks(settings);
+      await skipIntegrityOnPausedTasks();
     } catch {
       // tellActive/tellWaiting may race a reconnect; overall limit still holds.
     }

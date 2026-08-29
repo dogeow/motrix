@@ -11,8 +11,9 @@ import {
 import { Button } from "@/components/ui/button";
 import {
   DropdownMenu,
-  DropdownMenuCheckboxItem,
   DropdownMenuContent,
+  DropdownMenuRadioGroup,
+  DropdownMenuRadioItem,
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
 import { Input } from "@/components/ui/input";
@@ -129,15 +130,16 @@ export function AppToolbar({
             <TooltipContent>{t("toolbar.sort")}</TooltipContent>
           </Tooltip>
           <DropdownMenuContent align="end">
-            {SORT_KEYS.map((key) => (
-              <DropdownMenuCheckboxItem
-                key={key}
-                checked={sortKey === key}
-                onCheckedChange={() => onSortChange(key)}
-              >
-                {t(`sort.${key}`)}
-              </DropdownMenuCheckboxItem>
-            ))}
+            <DropdownMenuRadioGroup
+              value={sortKey}
+              onValueChange={(value) => onSortChange(value as SortKey)}
+            >
+              {SORT_KEYS.map((key) => (
+                <DropdownMenuRadioItem key={key} value={key}>
+                  {t(`sort.${key}`)}
+                </DropdownMenuRadioItem>
+              ))}
+            </DropdownMenuRadioGroup>
           </DropdownMenuContent>
         </DropdownMenu>
 

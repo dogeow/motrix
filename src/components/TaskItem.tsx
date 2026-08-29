@@ -4,6 +4,7 @@ import {
   Copy,
   Download,
   EllipsisVertical,
+  ExternalLink,
   FolderOpen,
   Info,
   LoaderCircle,
@@ -28,6 +29,7 @@ import {
 } from "@/components/ui/dropdown-menu";
 import {
   copyTaskLink,
+  openTask,
   pauseTask,
   resumeTask,
   retryTask,
@@ -42,8 +44,15 @@ import {
   taskProgress,
 } from "@/lib/format";
 import { t } from "@/lib/i18n";
+import {
+  btPeerCounts,
+  isConnectingTask,
+  isStartingTask,
+  verifyBadge,
+} from "@/lib/integrity";
 import { cn } from "@/lib/utils";
 import type { Aria2Task } from "@/lib/types";
+import { useAppStore } from "@/store/app";
 
 interface TaskItemProps {
   task: Aria2Task;
@@ -68,8 +77,15 @@ export function TaskItem({
   const complete = task.status === "complete";
   const errored = task.status === "error";
   const total = Number(task.totalLength);
-  const verifying = task.verifiedLength !== undefined;
-  const verifyPending = task.verifyIntegrityPending === "true";
+  const pausedByUserGids = useAppStore((state) => state.pausedByUserGids);
+  const startingGids = useAppStore((state) => state.startingGids);
+  const starting = isStartingTask(task, startingGids);
+  const connecting = isConnectingTask(task, startingGids);
+  const queued = task.status === "waiting" && !starting;
+  const badge = verifyBadge(task, pausedByUserGids);
+  const verifying = badge === "verifying" || badge === "stopping";
+  const verifyPending = badge === "pending";
+  const stoppingVerify = badge === "stopping";
   const verified = Number(task.verifiedLength ?? 0);
   const verifyProgress =
     total > 0 ? Math.min(100, (verified / total) * 100) : 0;
@@ -123,17 +139,25 @@ export function TaskItem({
     if (total > 0) meta.push(`${progress.toFixed(1)}%`);
   }
   if (running && !verifying && !verifyPending) {
-    meta.push(`↓ ${formatSpeed(task.downloadSpeed)}`);
-    if (isBt) {
-      meta.push(`↑ ${formatSpeed(task.uploadSpeed)}`);
+    if (connecting) {
+      meta.push(isBt ? t("task.seekingPeersHint") : t("task.connectingHint"));
+    } else {
+      meta.push(`↓ ${formatSpeed(task.downloadSpeed)}`);
+      if (isBt) {
+        meta.push(`↑ ${formatSpeed(task.uploadSpeed)}`);
+      }
+      if (!seeding) meta.push(t("task.eta", { eta: formatEta(task) }));
+      if (isBt) {
+        const peers = btPeerCounts(task);
+        meta.push(
+          t("task.connections", {
+            count: `${peers.seeders}/${peers.connections}`,
+          })
+        );
+      }
     }
-    if (!seeding) meta.push(t("task.eta", { eta: formatEta(task) }));
-    if (isBt) meta.push(
-      t("task.connections", {
-        count: `${task.numSeeders ?? 0}/${task.connections}`,
-      })
-    );
   }
+  if (starting) meta.push(t("task.startingHint"));
 
   return (
     <div
@@ -192,10 +216,16 @@ export function TaskItem({
               {t("status.seeding")}
             </Badge>
           )}
-          {verifying && (
+          {badge === "verifying" && (
             <Badge variant="secondary" className="shrink-0">
               <LoaderCircle className="animate-spin" />
               {t("status.verifying")}
+            </Badge>
+          )}
+          {stoppingVerify && (
+            <Badge variant="secondary" className="shrink-0">
+              <LoaderCircle className="animate-spin" />
+              {t("status.verifyStopping")}
             </Badge>
           )}
           {verifyPending && (
@@ -203,7 +233,24 @@ export function TaskItem({
               {t("status.verifyPending")}
             </Badge>
           )}
-          {paused && (
+          {starting && (
+            <Badge variant="secondary" className="shrink-0">
+              <LoaderCircle className="animate-spin" />
+              {t("status.starting")}
+            </Badge>
+          )}
+          {connecting && !seeding && (
+            <Badge variant="secondary" className="shrink-0">
+              <LoaderCircle className="animate-spin" />
+              {isBt ? t("status.seekingPeers") : t("status.connecting")}
+            </Badge>
+          )}
+          {queued && (
+            <Badge variant="outline" className="shrink-0">
+              {t("status.queued")}
+            </Badge>
+          )}
+          {paused && !starting && (
             <Badge variant="outline" className="shrink-0">
               {t("status.paused")}
             </Badge>
@@ -251,10 +298,29 @@ export function TaskItem({
             size="icon"
             className="size-8 hover:text-foreground"
             onClick={() => void handleToggle()}
-            aria-label={running ? t("common.pause") : t("common.start")}
-            title={running ? t("common.pause") : t("common.start")}
+            disabled={stoppingVerify || starting}
+            aria-label={
+              running
+                ? t("common.pause")
+                : starting
+                  ? t("status.starting")
+                  : t("common.start")
+            }
+            title={
+              running
+                ? t("common.pause")
+                : starting
+                  ? t("status.starting")
+                  : t("common.start")
+            }
           >
-            {running ? <Pause className="size-4" /> : <Play className="size-4" />}
+            {running ? (
+              <Pause className="size-4" />
+            ) : starting ? (
+              <LoaderCircle className="size-4 animate-spin" />
+            ) : (
+              <Play className="size-4" />
+            )}
           </Button>
         )}
         <Button
@@ -281,6 +347,11 @@ export function TaskItem({
           <DropdownMenuContent align="end" className="min-w-44">
             <DropdownMenuItem onClick={() => onInspect(task)}>
               <Info className="size-4" /> {t("task.detail")}
+            </DropdownMenuItem>
+            <DropdownMenuItem
+              onClick={() => void openTask(task).catch(toastError)}
+            >
+              <ExternalLink className="size-4" /> {t("common.open")}
             </DropdownMenuItem>
             <DropdownMenuItem onClick={() => void handleCopy()}>
               <Copy className="size-4" /> {t("common.copy")}

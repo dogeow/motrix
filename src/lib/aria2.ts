@@ -17,6 +17,19 @@ export type NotificationHandler = (method: string, gid: string) => void;
 export type StatusHandler = (connected: boolean) => void;
 
 const RECONNECT_DELAY = 1000;
+const OPEN_TIMEOUT = 8000;
+const CONNECT_TIMEOUT = 4000;
+
+export class EngineUnavailableError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = "EngineUnavailableError";
+  }
+}
+
+export function isEngineUnavailable(error: unknown): boolean {
+  return error instanceof EngineUnavailableError;
+}
 
 /**
  * Minimal aria2 JSON-RPC client over WebSocket.
@@ -27,8 +40,14 @@ export class Aria2Client {
   private pending = new Map<number, Pending>();
   private nextId = 1;
   private closed = false;
+  private reconnectTimer: ReturnType<typeof setTimeout> | null = null;
+  private connectTimer: ReturnType<typeof setTimeout> | null = null;
   private notificationHandlers = new Set<NotificationHandler>();
   private statusHandlers = new Set<StatusHandler>();
+  private openWaiters: Array<{
+    resolve: () => void;
+    reject: (error: Error) => void;
+  }> = [];
 
   constructor(
     private readonly port: number,
@@ -42,8 +61,11 @@ export class Aria2Client {
 
   close(): void {
     this.closed = true;
-    this.ws?.close();
-    this.ws = null;
+    this.clearTimers();
+    this.detachSocket();
+    this.statusHandlers.forEach((handler) => handler(false));
+    this.rejectAll(new EngineUnavailableError(t("engine.disconnected")));
+    this.rejectOpenWaiters(new EngineUnavailableError(t("engine.notReady")));
   }
 
   get connected(): boolean {
@@ -60,11 +82,22 @@ export class Aria2Client {
     return () => this.statusHandlers.delete(handler);
   }
 
-  call<T>(method: string, ...params: unknown[]): Promise<T> {
+  async call<T>(method: string, ...params: unknown[]): Promise<T> {
+    await this.ensureOpen();
+    try {
+      return await this.sendNow<T>(method, params);
+    } catch (error) {
+      if (!isEngineUnavailable(error) || this.closed) throw error;
+      await this.ensureOpen();
+      return this.sendNow<T>(method, params);
+    }
+  }
+
+  private sendNow<T>(method: string, params: unknown[]): Promise<T> {
     return new Promise<T>((resolve, reject) => {
       const ws = this.ws;
       if (!ws || ws.readyState !== WebSocket.OPEN) {
-        reject(new Error(t("engine.notReady")));
+        reject(new EngineUnavailableError(t("engine.disconnected")));
         return;
       }
       const id = this.nextId++;
@@ -83,25 +116,114 @@ export class Aria2Client {
     });
   }
 
+  private ensureOpen(): Promise<void> {
+    if (this.ws?.readyState === WebSocket.OPEN) return Promise.resolve();
+    if (this.closed) {
+      return Promise.reject(new EngineUnavailableError(t("engine.notReady")));
+    }
+    if (this.ws?.readyState !== WebSocket.CONNECTING) {
+      this.open();
+    }
+    return new Promise((resolve, reject) => {
+      const timer = window.setTimeout(() => {
+        this.openWaiters = this.openWaiters.filter(
+          (waiter) => waiter.resolve !== onOpen
+        );
+        reject(new EngineUnavailableError(t("engine.notReady")));
+      }, OPEN_TIMEOUT);
+      const onOpen = () => {
+        window.clearTimeout(timer);
+        resolve();
+      };
+      const onFail = (error: Error) => {
+        window.clearTimeout(timer);
+        reject(error);
+      };
+      this.openWaiters.push({ resolve: onOpen, reject: onFail });
+    });
+  }
+
+  private resolveOpenWaiters(): void {
+    const waiters = this.openWaiters;
+    this.openWaiters = [];
+    waiters.forEach((waiter) => waiter.resolve());
+  }
+
+  private rejectOpenWaiters(error: Error): void {
+    const waiters = this.openWaiters;
+    this.openWaiters = [];
+    waiters.forEach((waiter) => waiter.reject(error));
+  }
+
+  private clearTimers(): void {
+    if (this.reconnectTimer !== null) {
+      clearTimeout(this.reconnectTimer);
+      this.reconnectTimer = null;
+    }
+    if (this.connectTimer !== null) {
+      clearTimeout(this.connectTimer);
+      this.connectTimer = null;
+    }
+  }
+
+  private detachSocket(): void {
+    const ws = this.ws;
+    this.ws = null;
+    if (!ws) return;
+    ws.onopen = null;
+    ws.onclose = null;
+    ws.onmessage = null;
+    ws.onerror = null;
+    if (
+      ws.readyState === WebSocket.CONNECTING ||
+      ws.readyState === WebSocket.OPEN
+    ) {
+      ws.close();
+    }
+  }
+
   private open(): void {
+    if (this.closed) return;
+    if (this.ws?.readyState === WebSocket.OPEN) return;
+    if (this.ws?.readyState === WebSocket.CONNECTING) return;
+
+    this.clearTimers();
+    this.detachSocket();
+
     const ws = new WebSocket(`ws://127.0.0.1:${this.port}/jsonrpc`);
     this.ws = ws;
+    this.connectTimer = setTimeout(() => {
+      if (this.ws === ws && ws.readyState !== WebSocket.OPEN) {
+        ws.close();
+      }
+    }, CONNECT_TIMEOUT);
 
     ws.onopen = () => {
+      if (this.ws !== ws) return;
+      this.clearTimers();
+      this.resolveOpenWaiters();
       this.statusHandlers.forEach((handler) => handler(true));
     };
     ws.onmessage = (event) => {
       this.handleMessage(String(event.data));
     };
+    ws.onerror = () => {
+      // onclose follows; required so WKWebView actually tears the socket down.
+    };
     ws.onclose = () => {
       if (this.ws !== ws) return;
+      this.clearTimers();
+      this.ws = null;
       this.statusHandlers.forEach((handler) => handler(false));
-      this.rejectAll(new Error(t("engine.disconnected")));
-      if (!this.closed) {
-        setTimeout(() => {
-          if (!this.closed) this.open();
-        }, RECONNECT_DELAY);
+      this.rejectAll(new EngineUnavailableError(t("engine.disconnected")));
+      if (this.closed) {
+        this.rejectOpenWaiters(new EngineUnavailableError(t("engine.notReady")));
+        return;
       }
+      this.reconnectTimer = setTimeout(() => {
+        this.reconnectTimer = null;
+        if (!this.closed) this.open();
+      }, RECONNECT_DELAY);
     };
   }
 
@@ -113,7 +235,6 @@ export class Aria2Client {
       return;
     }
 
-    // Push notification (aria2.onDownloadStart / Complete / Error / ...)
     if (message.method) {
       const gid = message.params?.[0]?.gid ?? "";
       this.notificationHandlers.forEach((handler) =>

@@ -34,8 +34,50 @@ fn read_file_base64(path: String) -> Result<String, String> {
 }
 
 #[tauri::command]
+fn path_exists(path: String) -> bool {
+    std::path::Path::new(&path).is_file()
+}
+
+/// Create `path` if needed and verify the process can write inside it.
+/// Used before retrying a task whose volume was just remounted.
+#[tauri::command]
+fn ensure_download_dir(path: String) -> Result<(), String> {
+    use std::path::PathBuf;
+
+    let dir = PathBuf::from(&path);
+    std::fs::create_dir_all(&dir).map_err(|error| error.to_string())?;
+    let probe = dir.join(".motrix-write-test");
+    std::fs::write(&probe, b"ok").map_err(|error| error.to_string())?;
+    let _ = std::fs::remove_file(&probe);
+    Ok(())
+}
+
+#[tauri::command]
+fn dir_is_writable(path: String) -> bool {
+    ensure_download_dir(path).is_ok()
+}
+
+#[tauri::command]
 fn reveal_in_folder(path: String) -> Result<(), String> {
-    tauri_plugin_opener::reveal_item_in_dir(&path).map_err(|e| e.to_string())
+    let target = std::path::Path::new(&path);
+    match tauri_plugin_opener::reveal_item_in_dir(target) {
+        Ok(()) => Ok(()),
+        Err(error) => {
+            // File may not exist yet; still open the parent so Finder lands nearby.
+            let parent = target.parent().filter(|p| !p.as_os_str().is_empty());
+            match parent {
+                Some(parent) => {
+                    tauri_plugin_opener::reveal_item_in_dir(parent).map_err(|e| e.to_string())
+                }
+                None => Err(error.to_string()),
+            }
+        }
+    }
+}
+
+#[tauri::command]
+fn open_path(path: String) -> Result<(), String> {
+    tauri_plugin_opener::open_path(&path, None::<&str>).map_err(|e| e.to_string())
 }
 
 /// Move a task's downloaded files to the system trash.
@@ -201,7 +243,11 @@ pub fn run() {
             get_engine_info,
             restart_engine,
             read_file_base64,
+            path_exists,
+            ensure_download_dir,
+            dir_is_writable,
             reveal_in_folder,
+            open_path,
             trash_task_files,
             take_pending_targets,
             set_tray_title,

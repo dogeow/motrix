@@ -48,7 +48,7 @@ export function taskName(task: Aria2Task): string {
   const btName = task.bittorrent?.info?.name;
   if (btName) return btName;
 
-  const file = task.files[0];
+  const file = task.files?.[0];
 
   if (file?.path?.startsWith(METADATA_PREFIX)) {
     // aria2 suffixes the magnet's dn when it has one, else the info hash.
@@ -96,12 +96,12 @@ export function taskProgress(task: Aria2Task): number {
 /** Absolute path of the task's primary payload on disk. */
 export function taskFilePath(task: Aria2Task): string | null {
   // Magnet metadata placeholder tasks have no real payload on disk.
-  if (task.files[0]?.path?.startsWith(METADATA_PREFIX)) return null;
+  if (task.files?.[0]?.path?.startsWith(METADATA_PREFIX)) return null;
 
   const btName = task.bittorrent?.info?.name;
   if (btName) {
     const sep = task.dir.includes("\\") ? "\\" : "/";
     return `${task.dir}${sep}${btName}`;
   }
-  return task.files[0]?.path || null;
+  return task.files?.[0]?.path || null;
 }

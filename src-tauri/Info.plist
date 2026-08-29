@@ -1,0 +1,14 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+	<key>NSRemovableVolumesUsageDescription</key>
+	<string>Motrix 需要访问移动硬盘，以便在原目录继续下载。</string>
+	<key>NSDownloadsFolderUsageDescription</key>
+	<string>Motrix 使用下载文件夹保存文件。</string>
+	<key>NSDesktopFolderUsageDescription</key>
+	<string>Motrix 需要访问桌面才能在此保存下载。</string>
+	<key>NSDocumentsFolderUsageDescription</key>
+	<string>Motrix 需要访问文稿才能在此保存下载。</string>
+</dict>
+</plist>

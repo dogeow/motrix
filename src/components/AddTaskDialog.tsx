@@ -19,10 +19,12 @@ import {
   addUris,
   pickDirectory,
   pickTorrentFile,
+  toastAddBtResult,
   toastError,
 } from "@/lib/actions";
 import { t } from "@/lib/i18n";
 import { useAppStore } from "@/store/app";
+import { useSettingsStore } from "@/store/settings";
 
 interface AddTaskDialogProps {
   open: boolean;
@@ -31,6 +33,7 @@ interface AddTaskDialogProps {
 
 export function AddTaskDialog({ open, onOpenChange }: AddTaskDialogProps) {
   const engine = useAppStore((state) => state.engine);
+  const settingsDir = useSettingsStore((state) => state.settings.downloadDir);
   const [tab, setTab] = useState<"uri" | "torrent">("uri");
   const [uris, setUris] = useState("");
   const [torrentPath, setTorrentPath] = useState<string | null>(null);
@@ -39,9 +42,9 @@ export function AddTaskDialog({ open, onOpenChange }: AddTaskDialogProps) {
 
   useEffect(() => {
     if (open) {
-      setDir((current) => current || engine?.downloadDir || "");
+      setDir(settingsDir || engine?.downloadDir || "");
     }
-  }, [open, engine]);
+  }, [open, settingsDir, engine]);
 
   const reset = () => {
     setUris("");
@@ -80,7 +83,7 @@ export function AddTaskDialog({ open, onOpenChange }: AddTaskDialogProps) {
           toast.info(t("add.needUri"));
           return;
         }
-        const { added, failed } = await addUris(list, dir || undefined);
+        const { added, resumed, failed } = await addUris(list, dir || undefined);
         if (failed.length > 0) {
           // Keep only the failed lines so resubmitting won't duplicate
           // the tasks that were already added.
@@ -98,14 +101,18 @@ export function AddTaskDialog({ open, onOpenChange }: AddTaskDialogProps) {
           }
           return;
         }
-        toast.success(t("add.added", { count: added }));
+        if (resumed > 0) {
+          toast.success(t("add.continued", { count: resumed }));
+        }
+        if (added > 0) {
+          toast.success(t("add.added", { count: added }));
+        }
       } else {
         if (!torrentPath) {
           toast.info(t("add.needTorrent"));
           return;
         }
-        await addTorrent(torrentPath, dir || undefined);
-        toast.success(t("add.torrentAdded"));
+        toastAddBtResult(await addTorrent(torrentPath, dir || undefined));
       }
       reset();
       onOpenChange(false);
