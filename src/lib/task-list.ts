@@ -75,6 +75,32 @@ export function filterAndSortTasks(
   return sortTasks(filtered, sortKey);
 }
 
+/**
+ * Keep the list stable across aria2's one-second snapshots.
+ *
+ * aria2 does not expose a creation timestamp and does not guarantee the order
+ * of tellActive(), so using each response verbatim makes rows swap places.
+ * Existing tasks retain their previous order; genuinely new tasks are placed
+ * first. A first snapshot is expected in aria2's oldest-to-newest order and is
+ * reversed so the default view is newest first.
+ */
+export function stabilizeTaskOrder(
+  incoming: readonly Aria2Task[],
+  previous: readonly Aria2Task[]
+): Aria2Task[] {
+  if (previous.length === 0) return [...incoming].reverse();
+
+  const byGid = new Map(incoming.map((task) => [task.gid, task]));
+  const previousGids = new Set(previous.map((task) => task.gid));
+  const added = incoming.filter((task) => !previousGids.has(task.gid)).reverse();
+  const existing = previous.flatMap((task) => {
+    const current = byGid.get(task.gid);
+    return current ? [current] : [];
+  });
+
+  return [...added, ...existing];
+}
+
 function progress(task: Aria2Task): number {
   const total = Number(task.totalLength);
   return total > 0 ? Number(task.completedLength) / total : 0;

@@ -3,6 +3,7 @@ import { invoke } from "@tauri-apps/api/core";
 import { Aria2Client, EngineUnavailableError } from "@/lib/aria2";
 import { t } from "@/lib/i18n";
 import { TASK_LIST_KEYS } from "@/lib/rpc-keys";
+import { stabilizeTaskOrder } from "@/lib/task-list";
 import type {
   Aria2Task,
   Category,
@@ -143,7 +144,7 @@ export const useAppStore = create<AppState>((set, get) => ({
         client.call<GlobalStat>("getGlobalStat"),
         fetchTasks(client, category),
       ]);
-      const merged = keepFiles(tasks, previous);
+      const merged = keepFiles(stabilizeTaskOrder(tasks, previous), previous);
       const startingGids = get().startingGids.filter((gid) => {
         const task = merged.find((item) => item.gid === gid);
         return task?.status === "paused";
@@ -202,11 +203,14 @@ async function hydrateMissingNames(client: Aria2Client): Promise<void> {
   }
 }
 
-/** Newest stopped tasks first — aria2 appends them chronologically. */
+/** aria2 appends stopped tasks chronologically; the stable sorter reverses it. */
 function tellStopped(client: Aria2Client): Promise<Aria2Task[]> {
-  return client
-    .call<Aria2Task[]>("tellStopped", 0, MAX_LISTED, TASK_LIST_KEYS)
-    .then((tasks) => tasks.reverse());
+  return client.call<Aria2Task[]>(
+    "tellStopped",
+    0,
+    MAX_LISTED,
+    TASK_LIST_KEYS
+  );
 }
 
 function fetchTasks(

@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import {
   categoryTaskCount,
   filterAndSortTasks,
+  stabilizeTaskOrder,
   sortTasks,
 } from "@/lib/task-list";
 import type { Aria2Task, GlobalStat } from "@/lib/types";
@@ -81,5 +82,38 @@ describe("categoryTaskCount", () => {
     expect(categoryTaskCount(stat, "waiting")).toBe(3);
     expect(categoryTaskCount(stat, "stopped")).toBe(4);
     expect(categoryTaskCount(stat, "all")).toBe(9);
+  });
+});
+
+describe("stabilizeTaskOrder", () => {
+  const older = task("old", "Older.iso");
+  const newer = task("new", "Newer.iso");
+
+  it("shows the newest task first on the initial snapshot", () => {
+    expect(stabilizeTaskOrder([older, newer], []).map(({ gid }) => gid)).toEqual([
+      "new",
+      "old",
+    ]);
+  });
+
+  it("preserves the previous order when aria2 changes response order", () => {
+    expect(
+      stabilizeTaskOrder([newer, older], [older, newer]).map(({ gid }) => gid)
+    ).toEqual(["old", "new"]);
+  });
+
+  it("prepends newly discovered tasks without moving existing rows", () => {
+    const latest = task("latest", "Latest.iso");
+    expect(
+      stabilizeTaskOrder([older, newer, latest], [newer, older]).map(
+        ({ gid }) => gid
+      )
+    ).toEqual(["latest", "new", "old"]);
+  });
+
+  it("drops tasks that are no longer in the snapshot", () => {
+    expect(
+      stabilizeTaskOrder([newer], [newer, older]).map(({ gid }) => gid)
+    ).toEqual(["new"]);
   });
 });
