@@ -3,8 +3,10 @@ import { invoke } from "@tauri-apps/api/core";
 import { Aria2Client, EngineUnavailableError } from "@/lib/aria2";
 import { t } from "@/lib/i18n";
 import { TASK_LIST_KEYS } from "@/lib/rpc-keys";
+import { createRefreshQueue } from "@/lib/refresh-queue";
 import { stabilizeTaskOrder } from "@/lib/task-list";
 import type {
+  Aria2File,
   Aria2Task,
   Category,
   EngineInfo,
@@ -16,6 +18,8 @@ export type { Category } from "@/lib/types";
 let client: Aria2Client | null = null;
 let initStarted = false;
 let pollId: ReturnType<typeof setInterval> | null = null;
+let categoryVersion = 0;
+const fileCache = new Map<string, Aria2File[]>();
 
 /** The singleton aria2 client. Only valid after init() resolves. */
 export function aria2(): Aria2Client {
@@ -46,6 +50,8 @@ interface AppState {
   tasks: Aria2Task[];
   stat: GlobalStat | null;
   initError: string | null;
+  loading: boolean;
+  refreshError: string | null;
   /** User-paused GIDs; hash check can stay active until forcePause finishes. */
   pausedByUserGids: string[];
   markPausedByUser: (gids: string[]) => void;
@@ -66,6 +72,8 @@ export const useAppStore = create<AppState>((set, get) => ({
   tasks: [],
   stat: null,
   initError: null,
+  loading: true,
+  refreshError: null,
   pausedByUserGids: [],
   startingGids: [],
 
@@ -109,7 +117,7 @@ export const useAppStore = create<AppState>((set, get) => ({
       engine = await invoke<EngineInfo>("get_engine_info");
     } catch (error) {
       initStarted = false;
-      set({ initError: String(error) });
+      set({ initError: String(error), loading: false });
       return;
     }
     set({ engine, initError: null });
@@ -132,38 +140,76 @@ export const useAppStore = create<AppState>((set, get) => ({
   },
 
   setCategory(category) {
-    set({ category });
+    if (category === get().category) return;
+    for (const task of get().tasks) rememberFiles(task.gid, task.files);
+    categoryVersion += 1;
+    set({ category, tasks: [], loading: true, refreshError: null });
     void get().refresh();
   },
 
   async refresh() {
-    if (!client?.connected) return;
-    const { category, tasks: previous } = get();
-    try {
-      const [stat, tasks] = await Promise.all([
-        client.call<GlobalStat>("getGlobalStat"),
-        fetchTasks(client, category),
-      ]);
-      const merged = keepFiles(stabilizeTaskOrder(tasks, previous), previous);
-      const startingGids = get().startingGids.filter((gid) => {
-        const task = merged.find((item) => item.gid === gid);
-        return task?.status === "paused";
-      });
-      set({ stat, tasks: merged, startingGids });
-      void hydrateMissingNames(client);
-    } catch {
-      // Transient RPC failure (e.g. mid-reconnect); onStatus handles state.
-    }
+    await refreshTasks();
   },
 }));
 
+const refreshTasks = createRefreshQueue(async () => {
+  const currentClient = client;
+  if (!currentClient?.connected) return;
+  const version = categoryVersion;
+  const { category } = useAppStore.getState();
+  try {
+    const [stat, tasks] = await Promise.all([
+      currentClient.call<GlobalStat>("getGlobalStat"),
+      fetchTasks(currentClient, category),
+    ]);
+    // A → B → A is also a new view, even though the category matches again.
+    if (version !== categoryVersion || client !== currentClient) return;
+    const { tasks: previous, startingGids: starting } = useAppStore.getState();
+    const merged = keepFiles(stabilizeTaskOrder(tasks, previous), previous);
+    const startingGids = starting.filter((gid) => {
+      const task = merged.find((item) => item.gid === gid);
+      return !task || task.status === "paused";
+    });
+    useAppStore.setState({
+      stat,
+      tasks: merged,
+      startingGids,
+      loading: false,
+      refreshError: null,
+    });
+    void hydrateMissingNames(currentClient);
+  } catch (error) {
+    if (version !== categoryVersion || client !== currentClient) return;
+    useAppStore.setState({
+      loading: false,
+      refreshError: error instanceof Error ? error.message : String(error),
+    });
+  }
+});
+
 const MAX_LISTED = 1000;
+
+/** Keep display names across category switches without retaining full file lists. */
+function rememberFiles(gid: string, files: Aria2File[]): void {
+  if (!files?.length) return;
+  fileCache.delete(gid);
+  fileCache.set(gid, files.slice(0, 1));
+  if (fileCache.size > MAX_LISTED * 3) {
+    fileCache.delete(fileCache.keys().next().value!);
+  }
+}
 
 function keepFiles(tasks: Aria2Task[], previous: Aria2Task[]): Aria2Task[] {
   const prev = new Map(previous.map((task) => [task.gid, task.files]));
   return tasks.map((task) => {
-    const incoming = task.files?.length ? task.files : prev.get(task.gid);
+    const previousFiles = prev.get(task.gid);
+    const incoming = task.files?.length
+      ? task.files
+      : previousFiles?.length
+        ? previousFiles
+        : fileCache.get(task.gid);
     if (!incoming?.length) return { ...task, files: [] };
+    rememberFiles(task.gid, incoming);
     return { ...task, files: incoming.length > 1 ? [incoming[0]] : incoming };
   });
 }
@@ -177,9 +223,7 @@ async function hydrateMissingNames(client: Aria2Client): Promise<void> {
     .getState()
     .tasks.find(
       (task) =>
-        !task.bittorrent?.info?.name &&
-        !task.files?.length &&
-        !task.infoHash
+        !task.bittorrent?.info?.name && !task.files?.length && !task.infoHash
     );
   if (!missing) return;
   hydrating = true;
@@ -191,6 +235,7 @@ async function hydrateMissingNames(client: Aria2Client): Promise<void> {
     );
     const files = detail.files?.slice(0, 1) ?? [];
     if (files.length === 0) return;
+    rememberFiles(missing.gid, files);
     useAppStore.setState((state) => ({
       tasks: state.tasks.map((task) =>
         task.gid === missing.gid ? { ...task, files } : task
@@ -205,12 +250,7 @@ async function hydrateMissingNames(client: Aria2Client): Promise<void> {
 
 /** aria2 appends stopped tasks chronologically; the stable sorter reverses it. */
 function tellStopped(client: Aria2Client): Promise<Aria2Task[]> {
-  return client.call<Aria2Task[]>(
-    "tellStopped",
-    0,
-    MAX_LISTED,
-    TASK_LIST_KEYS
-  );
+  return client.call<Aria2Task[]>("tellStopped", 0, MAX_LISTED, TASK_LIST_KEYS);
 }
 
 function fetchTasks(
@@ -221,7 +261,12 @@ function fetchTasks(
     case "active":
       return client.call<Aria2Task[]>("tellActive", TASK_LIST_KEYS);
     case "waiting":
-      return client.call<Aria2Task[]>("tellWaiting", 0, MAX_LISTED, TASK_LIST_KEYS);
+      return client.call<Aria2Task[]>(
+        "tellWaiting",
+        0,
+        MAX_LISTED,
+        TASK_LIST_KEYS
+      );
     case "stopped":
       return tellStopped(client);
     case "all":

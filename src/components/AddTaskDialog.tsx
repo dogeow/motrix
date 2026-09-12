@@ -1,5 +1,5 @@
-import { useEffect, useState } from "react";
-import { FileUp, FolderOpen } from "lucide-react";
+import { useEffect, useRef, useState } from "react";
+import { FileUp, FolderOpen, LoaderCircle } from "lucide-react";
 import { toast } from "sonner";
 import { Button } from "@/components/ui/button";
 import {
@@ -32,6 +32,8 @@ interface AddTaskDialogProps {
 }
 
 export function AddTaskDialog({ open, onOpenChange }: AddTaskDialogProps) {
+  const connected = useAppStore((state) => state.connected);
+  const submitLock = useRef(false);
   const engine = useAppStore((state) => state.engine);
   const settingsDir = useSettingsStore((state) => state.settings.downloadDir);
   const [tab, setTab] = useState<"uri" | "torrent">("uri");
@@ -72,18 +74,27 @@ export function AddTaskDialog({ open, onOpenChange }: AddTaskDialogProps) {
   };
 
   const handleSubmit = async () => {
+    if (submitLock.current || !connected) return;
+    submitLock.current = true;
     setSubmitting(true);
     try {
       if (tab === "uri") {
-        const list = uris
-          .split("\n")
-          .map((line) => line.trim())
-          .filter(Boolean);
+        const list = [
+          ...new Set(
+            uris
+              .split(/\r?\n/)
+              .map((line) => line.trim())
+              .filter(Boolean)
+          ),
+        ];
         if (list.length === 0) {
           toast.info(t("add.needUri"));
           return;
         }
-        const { added, resumed, failed } = await addUris(list, dir || undefined);
+        const { added, resumed, failed } = await addUris(
+          list,
+          dir || undefined
+        );
         if (failed.length > 0) {
           // Keep only the failed lines so resubmitting won't duplicate
           // the tasks that were already added.
@@ -119,6 +130,7 @@ export function AddTaskDialog({ open, onOpenChange }: AddTaskDialogProps) {
     } catch (error) {
       toastError(error);
     } finally {
+      submitLock.current = false;
       setSubmitting(false);
     }
   };
@@ -128,25 +140,39 @@ export function AddTaskDialog({ open, onOpenChange }: AddTaskDialogProps) {
     : null;
 
   return (
-    <Dialog open={open} onOpenChange={onOpenChange}>
-      <DialogContent className="sm:max-w-lg">
+    <Dialog
+      open={open}
+      onOpenChange={(next) => {
+        if (!submitLock.current) onOpenChange(next);
+      }}
+    >
+      <DialogContent className="sm:max-w-lg" showCloseButton={!submitting}>
         <DialogHeader>
           <DialogTitle>{t("add.title")}</DialogTitle>
           <DialogDescription>{t("add.description")}</DialogDescription>
         </DialogHeader>
 
-        <Tabs value={tab} onValueChange={(value) => setTab(value as "uri" | "torrent")}>
+        <Tabs
+          value={tab}
+          onValueChange={(value) => setTab(value as "uri" | "torrent")}
+        >
           <TabsList className="w-full">
-            <TabsTrigger value="uri" className="flex-1">
+            <TabsTrigger disabled={submitting} value="uri" className="flex-1">
               {t("add.tabUri")}
             </TabsTrigger>
-            <TabsTrigger value="torrent" className="flex-1">
+            <TabsTrigger
+              disabled={submitting}
+              value="torrent"
+              className="flex-1"
+            >
               {t("add.tabTorrent")}
             </TabsTrigger>
           </TabsList>
 
           <TabsContent value="uri" className="mt-3">
             <Textarea
+              disabled={submitting}
+              aria-label={t("add.tabUri")}
               value={uris}
               onChange={(event) => setUris(event.target.value)}
               placeholder={t("add.uriPlaceholder")}
@@ -160,6 +186,7 @@ export function AddTaskDialog({ open, onOpenChange }: AddTaskDialogProps) {
           <TabsContent value="torrent" className="mt-3">
             <button
               type="button"
+              disabled={submitting}
               onClick={() => void handlePickTorrent()}
               className="flex w-full cursor-pointer flex-col items-center justify-center gap-2 rounded-lg border border-dashed py-8 text-sm text-muted-foreground transition-colors hover:bg-accent/40"
             >
@@ -174,6 +201,7 @@ export function AddTaskDialog({ open, onOpenChange }: AddTaskDialogProps) {
           <div className="flex gap-2">
             <Input
               id="download-dir"
+              disabled={submitting}
               value={dir}
               onChange={(event) => setDir(event.target.value)}
               className="font-mono text-xs"
@@ -181,6 +209,8 @@ export function AddTaskDialog({ open, onOpenChange }: AddTaskDialogProps) {
             <Button
               variant="outline"
               size="icon"
+              disabled={submitting}
+              aria-label={t("common.chooseDir")}
               onClick={() => void handlePickDir()}
               title={t("common.chooseDir")}
             >
@@ -189,11 +219,28 @@ export function AddTaskDialog({ open, onOpenChange }: AddTaskDialogProps) {
           </div>
         </div>
 
+        {!connected && (
+          <p role="status" className="text-xs text-muted-foreground">
+            {t("engine.notReady")}
+          </p>
+        )}
         <DialogFooter>
-          <Button variant="outline" onClick={() => onOpenChange(false)}>
+          <Button
+            variant="outline"
+            disabled={submitting}
+            onClick={() => onOpenChange(false)}
+          >
             {t("common.cancel")}
           </Button>
-          <Button onClick={() => void handleSubmit()} disabled={submitting}>
+          <Button
+            onClick={() => void handleSubmit()}
+            disabled={
+              submitting ||
+              !connected ||
+              (tab === "uri" ? !uris.trim() : !torrentPath)
+            }
+          >
+            {submitting && <LoaderCircle className="size-4 animate-spin" />}
             {submitting ? t("add.submitting") : t("add.submit")}
           </Button>
         </DialogFooter>

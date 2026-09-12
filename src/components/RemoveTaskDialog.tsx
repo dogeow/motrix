@@ -1,4 +1,7 @@
 import { useState } from "react";
+import { LoaderCircle } from "lucide-react";
+import { useAsyncAction } from "@/hooks/useAsyncAction";
+import { useAppStore } from "@/store/app";
 import { toast } from "sonner";
 import {
   AlertDialog,
@@ -18,10 +21,9 @@ import { t } from "@/lib/i18n";
 import type { Aria2Task } from "@/lib/types";
 
 interface RemoveTaskDialogProps {
-  /** Snapshot of the task pending removal; null closes the dialog. */
-  task: Aria2Task | null;
-  /** Additional tasks removed alongside it when a selection is active. */
-  extraTasks?: Aria2Task[];
+  /** Exact snapshot confirmed by the user; polling cannot change its scope. */
+  tasks: Aria2Task[];
+  onRemoved: (gids: string[]) => void;
   onClose: () => void;
 }
 
@@ -30,14 +32,15 @@ interface RemoveTaskDialogProps {
  * confirmation survives the row unmounting when a task changes category.
  */
 export function RemoveTaskDialog({
-  task,
-  extraTasks = [],
+  tasks: targets,
+  onRemoved,
   onClose,
 }: RemoveTaskDialogProps) {
   const [deleteFiles, setDeleteFiles] = useState(false);
 
-  const targets = task ? [task, ...extraTasks] : [];
-  const name = task ? taskName(task) : "";
+  const { busy, run } = useAsyncAction();
+  const connected = useAppStore((state) => state.connected);
+  const name = targets[0] ? taskName(targets[0]) : "";
 
   const close = () => {
     setDeleteFiles(false);
@@ -50,9 +53,11 @@ export function RemoveTaskDialog({
       // parallel burst makes "record not found" errors far more likely.
       let failed = 0;
       const errors: string[] = [];
+      const removed: string[] = [];
       for (const target of targets) {
         try {
           await removeTask(target, deleteFiles);
+          removed.push(target.gid);
         } catch (error) {
           failed += 1;
           errors.push(
@@ -62,6 +67,7 @@ export function RemoveTaskDialog({
           );
         }
       }
+      onRemoved(removed);
       if (failed > 0) {
         toast.warning(
           t("remove.partial", {
@@ -86,12 +92,16 @@ export function RemoveTaskDialog({
 
   return (
     <AlertDialog
-      open={task !== null}
+      open={targets.length > 0}
       onOpenChange={(open) => {
-        if (!open) close();
+        if (!open && !busy) close();
       }}
     >
-      <AlertDialogContent>
+      <AlertDialogContent
+        onEscapeKeyDown={(event) => {
+          if (busy) event.preventDefault();
+        }}
+      >
         <AlertDialogHeader>
           <AlertDialogTitle>{t("remove.title")}</AlertDialogTitle>
           <AlertDialogDescription>
@@ -116,6 +126,7 @@ export function RemoveTaskDialog({
           <Checkbox
             id="remove-delete-files"
             checked={deleteFiles}
+            disabled={busy}
             onCheckedChange={(checked) => setDeleteFiles(checked === true)}
           />
           <Label htmlFor="remove-delete-files" className="font-normal">
@@ -123,9 +134,19 @@ export function RemoveTaskDialog({
           </Label>
         </div>
         <AlertDialogFooter>
-          <AlertDialogCancel>{t("common.cancel")}</AlertDialogCancel>
-          <AlertDialogAction onClick={() => void handleConfirm()}>
-            {t("common.delete")}
+          <AlertDialogCancel disabled={busy}>
+            {t("common.cancel")}
+          </AlertDialogCancel>
+          <AlertDialogAction
+            variant="destructive"
+            disabled={busy || !connected}
+            onClick={(event) => {
+              event.preventDefault();
+              void run(handleConfirm);
+            }}
+          >
+            {busy && <LoaderCircle className="size-4 animate-spin" />}
+            {busy ? t("remove.removing") : t("common.delete")}
           </AlertDialogAction>
         </AlertDialogFooter>
       </AlertDialogContent>

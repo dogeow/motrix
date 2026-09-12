@@ -1,5 +1,8 @@
+import type { RefObject } from "react";
 import {
   ArrowUpDown,
+  Download,
+  Ellipsis,
   Eraser,
   Pause,
   Play,
@@ -12,17 +15,14 @@ import { Button } from "@/components/ui/button";
 import {
   DropdownMenu,
   DropdownMenuContent,
+  DropdownMenuItem,
   DropdownMenuRadioGroup,
   DropdownMenuRadioItem,
+  DropdownMenuSeparator,
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
 import { Input } from "@/components/ui/input";
 import { Tabs, TabsList, TabsTrigger } from "@/components/ui/tabs";
-import {
-  Tooltip,
-  TooltipContent,
-  TooltipTrigger,
-} from "@/components/ui/tooltip";
 import {
   CATEGORY_TABS,
   SORT_KEYS,
@@ -33,10 +33,12 @@ import { t } from "@/lib/i18n";
 import type { Category, GlobalStat } from "@/lib/types";
 import { cn } from "@/lib/utils";
 
-/** macOS keeps its traffic lights over our toolbar, so reserve space for them. */
 const IS_MAC = navigator.userAgent.includes("Macintosh");
 
 interface AppToolbarProps {
+  connected: boolean;
+  busy: boolean;
+  searchRef: RefObject<HTMLInputElement | null>;
   category: Category;
   stat: GlobalStat | null;
   query: string;
@@ -52,6 +54,9 @@ interface AppToolbarProps {
 }
 
 export function AppToolbar({
+  connected,
+  busy,
+  searchRef,
   category,
   stat,
   query,
@@ -65,132 +70,146 @@ export function AppToolbar({
   onOpenPreferences,
   onAddTask,
 }: AppToolbarProps) {
+  const unavailable = !connected || busy;
   return (
-    <header
-      data-tauri-drag-region
-      className={cn(
-        "flex h-13 shrink-0 items-center gap-3 border-b px-3",
-        IS_MAC && "pl-20"
-      )}
-    >
-      <Tabs
-        value={category}
-        onValueChange={(value) => onCategoryChange(value as Category)}
+    <header className="shrink-0 border-b bg-background">
+      <div
+        data-tauri-drag-region
+        className={cn("flex h-13 items-center gap-3 px-4", IS_MAC && "pl-20")}
       >
-        <TabsList>
-          {CATEGORY_TABS.map((value) => {
-            const count = stat ? categoryTaskCount(stat, value) : 0;
-            return (
-              <TabsTrigger key={value} value={value}>
-                {t(`tabs.${value}`)}
-                {count > 0 && (
-                  <span className="ml-1 tabular-nums opacity-60">{count}</span>
-                )}
-              </TabsTrigger>
-            );
-          })}
-        </TabsList>
-      </Tabs>
-
-      <div className="relative ml-auto w-44">
-        <Search className="pointer-events-none absolute top-1/2 left-2.5 size-3.5 -translate-y-1/2 text-muted-foreground" />
-        <Input
-          value={query}
-          onChange={(event) => onQueryChange(event.target.value)}
-          placeholder={t("toolbar.search")}
-          className="h-8 pl-8 text-xs"
-        />
-        {query && (
-          <button
-            type="button"
-            onClick={() => onQueryChange("")}
-            className="absolute top-1/2 right-2 -translate-y-1/2 text-muted-foreground hover:text-foreground"
-            aria-label={t("toolbar.clearSearch")}
-          >
-            <X className="size-3.5" />
-          </button>
-        )}
-      </div>
-
-      <div className="flex items-center gap-0.5">
-        <DropdownMenu>
-          <Tooltip>
-            <TooltipTrigger asChild>
-              <DropdownMenuTrigger asChild>
-                <Button
-                  variant="ghost"
-                  size="icon"
-                  className="size-8 text-muted-foreground hover:text-foreground"
-                  aria-label={t("toolbar.sort")}
-                >
-                  <ArrowUpDown className="size-4" />
-                </Button>
-              </DropdownMenuTrigger>
-            </TooltipTrigger>
-            <TooltipContent>{t("toolbar.sort")}</TooltipContent>
-          </Tooltip>
-          <DropdownMenuContent align="end">
-            <DropdownMenuRadioGroup
-              value={sortKey}
-              onValueChange={(value) => onSortChange(value as SortKey)}
-            >
-              {SORT_KEYS.map((key) => (
-                <DropdownMenuRadioItem key={key} value={key}>
-                  {t(`sort.${key}`)}
-                </DropdownMenuRadioItem>
-              ))}
-            </DropdownMenuRadioGroup>
-          </DropdownMenuContent>
-        </DropdownMenu>
-
-        {stat && Number(stat.numStopped) > 0 && (
-          <IconAction label={t("toolbar.purge")} onClick={onPurgeStopped}>
-            <Eraser className="size-4" />
-          </IconAction>
-        )}
-        <IconAction label={t("toolbar.pauseAll")} onClick={onPauseAll}>
-          <Pause className="size-4" />
-        </IconAction>
-        <IconAction label={t("toolbar.resumeAll")} onClick={onResumeAll}>
-          <Play className="size-4" />
-        </IconAction>
-        <IconAction
-          label={t("toolbar.preferences")}
-          onClick={onOpenPreferences}
-        >
-          <Settings className="size-4" />
-        </IconAction>
-        <Button size="sm" className="ml-1.5" onClick={onAddTask}>
-          <Plus className="size-4" /> {t("toolbar.addTask")}
-        </Button>
-      </div>
-    </header>
-  );
-}
-
-function IconAction({
-  label,
-  onClick,
-  children,
-}: {
-  label: string;
-  onClick: () => void;
-  children: React.ReactNode;
-}) {
-  return (
-    <Tooltip>
-      <TooltipTrigger asChild>
+        <div className="pointer-events-none flex items-center gap-2 text-sm font-semibold tracking-tight">
+          <Download className="size-4 text-muted-foreground" /> Motrix
+        </div>
+        <div data-tauri-drag-region className="h-full flex-1" />
         <Button
           variant="ghost"
           size="icon"
-          className="size-8 text-muted-foreground hover:text-foreground"
-          onClick={onClick}
-          aria-label={label}
+          className="size-8 text-muted-foreground"
+          onClick={onOpenPreferences}
+          aria-label={t("toolbar.preferences")}
+          title={t("toolbar.preferences")}
         >
-          {children}
+          <Settings className="size-4" />
         </Button>
-      </TooltipTrigger>
-      <TooltipContent>{label}</TooltipContent>
-    </Tooltip>
+        <Button size="sm" onClick={onAddTask}>
+          <Plus className="size-4" /> {t("toolbar.addTask")}
+        </Button>
+      </div>
+      <div className="flex flex-wrap items-center gap-x-3 gap-y-2 px-4 pt-1 pb-3">
+        <Tabs
+          value={category}
+          onValueChange={(value) => onCategoryChange(value as Category)}
+        >
+          <TabsList aria-label={t("toolbar.categories")}>
+            {CATEGORY_TABS.map((value) => {
+              const count = stat ? categoryTaskCount(stat, value) : 0;
+              return (
+                <TabsTrigger key={value} value={value}>
+                  {t(`tabs.${value}`)}
+                  <span className="ml-1 min-w-3 text-[11px] tabular-nums opacity-60">
+                    {count}
+                  </span>
+                </TabsTrigger>
+              );
+            })}
+          </TabsList>
+        </Tabs>
+        <div className="relative ml-auto min-w-36 flex-1 sm:max-w-64">
+          <Search className="pointer-events-none absolute top-1/2 left-2.5 size-3.5 -translate-y-1/2 text-muted-foreground" />
+          <Input
+            ref={searchRef}
+            value={query}
+            onChange={(event) => onQueryChange(event.target.value)}
+            placeholder={t("toolbar.search")}
+            aria-label={t("toolbar.search")}
+            className="h-8 pr-8 pl-8 text-xs"
+            onKeyDown={(event) => {
+              if (event.key === "Escape") {
+                event.stopPropagation();
+                onQueryChange("");
+              }
+            }}
+          />
+          {query && (
+            <button
+              type="button"
+              onClick={() => {
+                onQueryChange("");
+                searchRef.current?.focus();
+              }}
+              className="absolute top-1/2 right-1 flex size-6 -translate-y-1/2 items-center justify-center rounded text-muted-foreground hover:bg-accent hover:text-foreground focus-visible:ring-2 focus-visible:ring-ring"
+              aria-label={t("toolbar.clearSearch")}
+            >
+              <X className="size-3.5" />
+            </button>
+          )}
+        </div>
+        <div className="flex items-center gap-1">
+          <DropdownMenu>
+            <DropdownMenuTrigger asChild>
+              <Button
+                variant="ghost"
+                size="icon"
+                className="size-8 text-muted-foreground"
+                aria-label={t("toolbar.sort")}
+                title={`${t("toolbar.sort")} · ${t(`sort.${sortKey}`)}`}
+              >
+                <ArrowUpDown className="size-4" />
+              </Button>
+            </DropdownMenuTrigger>
+            <DropdownMenuContent align="end">
+              <DropdownMenuRadioGroup
+                value={sortKey}
+                onValueChange={(value) => onSortChange(value as SortKey)}
+              >
+                {SORT_KEYS.map((key) => (
+                  <DropdownMenuRadioItem key={key} value={key}>
+                    {t(`sort.${key}`)}
+                  </DropdownMenuRadioItem>
+                ))}
+              </DropdownMenuRadioGroup>
+            </DropdownMenuContent>
+          </DropdownMenu>
+          <DropdownMenu>
+            <DropdownMenuTrigger asChild>
+              <Button
+                variant="ghost"
+                size="icon"
+                className="size-8 text-muted-foreground"
+                aria-label={t("toolbar.taskActions")}
+                title={t("toolbar.taskActions")}
+              >
+                <Ellipsis className="size-4" />
+              </Button>
+            </DropdownMenuTrigger>
+            <DropdownMenuContent align="end">
+              <DropdownMenuItem
+                disabled={
+                  unavailable ||
+                  !stat ||
+                  Number(stat.numActive) + Number(stat.numWaiting) === 0
+                }
+                onClick={onPauseAll}
+              >
+                <Pause className="size-4" /> {t("toolbar.pauseAll")}
+              </DropdownMenuItem>
+              <DropdownMenuItem
+                disabled={unavailable || !stat || Number(stat.numWaiting) === 0}
+                onClick={onResumeAll}
+              >
+                <Play className="size-4" /> {t("toolbar.resumeAll")}
+              </DropdownMenuItem>
+              <DropdownMenuSeparator />
+              <DropdownMenuItem
+                disabled={unavailable || !stat || Number(stat.numStopped) === 0}
+                onClick={onPurgeStopped}
+              >
+                <Eraser className="size-4" /> {t("toolbar.purge")}
+              </DropdownMenuItem>
+            </DropdownMenuContent>
+          </DropdownMenu>
+        </div>
+      </div>
+    </header>
   );
 }

@@ -54,9 +54,13 @@ import { cn } from "@/lib/utils";
 import type { Aria2Task } from "@/lib/types";
 import { useAppStore } from "@/store/app";
 
+import { useAsyncAction } from "@/hooks/useAsyncAction";
+import { canPauseTask, canResumeTask } from "@/lib/task-actions";
+
 interface TaskItemProps {
   task: Aria2Task;
   selected: boolean;
+  disabled: boolean;
   onSelectedChange: (task: Aria2Task, selected: boolean) => void;
   onRemove: (task: Aria2Task) => void;
   onInspect: (task: Aria2Task) => void;
@@ -65,10 +69,12 @@ interface TaskItemProps {
 export function TaskItem({
   task,
   selected,
+  disabled,
   onSelectedChange,
   onRemove,
   onInspect,
 }: TaskItemProps) {
+  const { busy, run } = useAsyncAction();
   const name = taskName(task);
   const progress = taskProgress(task);
   const isBt = Boolean(task.bittorrent);
@@ -95,8 +101,8 @@ export function TaskItem({
 
   const handleToggle = async () => {
     try {
-      if (running) await pauseTask(task);
-      else if (paused) await resumeTask(task);
+      if (canPauseTask(task)) await pauseTask(task);
+      else if (canResumeTask(task)) await resumeTask(task);
     } catch (error) {
       toastError(error);
     }
@@ -162,17 +168,22 @@ export function TaskItem({
   return (
     <div
       className={cn(
-        "group flex items-center gap-3 rounded-lg px-3 py-2.5 transition-colors",
-        selected ? "bg-accent" : "hover:bg-accent/50"
+        "group flex items-center gap-3 rounded-xl border px-3 py-3 transition-colors",
+        selected
+          ? "border-primary/25 bg-accent"
+          : "border-border/60 bg-card hover:border-border hover:bg-accent/30"
       )}
-      onDoubleClick={() => onInspect(task)}
     >
-      {/* The type icon gives way to a checkbox on hover or when selected. */}
-      <div className="relative size-9 shrink-0">
+      <Checkbox
+        checked={selected}
+        disabled={disabled || busy}
+        onCheckedChange={(checked) => onSelectedChange(task, checked === true)}
+        aria-label={t("task.select", { name })}
+      />
+      <div className="relative size-9 shrink-0" aria-hidden="true">
         <div
           className={cn(
-            "absolute inset-0 flex items-center justify-center rounded-md transition-opacity group-hover:opacity-0",
-            selected && "opacity-0",
+            "absolute inset-0 flex items-center justify-center rounded-lg",
             errored
               ? "bg-destructive/10 text-destructive"
               : complete
@@ -190,27 +201,31 @@ export function TaskItem({
             <Download className="size-4" />
           )}
         </div>
-        <div
-          className={cn(
-            "absolute inset-0 flex items-center justify-center transition-opacity group-hover:opacity-100",
-            !selected && "opacity-0"
-          )}
-        >
-          <Checkbox
-            checked={selected}
-            onCheckedChange={(checked) =>
-              onSelectedChange(task, checked === true)
-            }
-            aria-label={t("task.select", { name })}
-          />
-        </div>
       </div>
 
       <div className="min-w-0 flex-1">
         <div className="flex items-center gap-2">
-          <span className="truncate text-sm font-medium" title={name}>
+          <button
+            type="button"
+            onClick={() => onInspect(task)}
+            className="min-w-0 truncate rounded text-left text-sm font-medium hover:underline focus-visible:outline-2 focus-visible:outline-ring"
+            title={name}
+          >
             {name}
-          </span>
+          </button>
+          {complete && (
+            <Badge
+              variant="outline"
+              className="shrink-0 text-emerald-600 dark:text-emerald-400"
+            >
+              {t("status.complete")}
+            </Badge>
+          )}
+          {errored && (
+            <Badge variant="outline" className="shrink-0 text-destructive">
+              {t("status.error")}
+            </Badge>
+          )}
           {seeding && (
             <Badge variant="secondary" className="shrink-0">
               {t("status.seeding")}
@@ -258,7 +273,11 @@ export function TaskItem({
         </div>
 
         {!complete && !errored && (
-          <Progress value={visibleProgress} className="mt-2 h-1" />
+          <Progress
+            value={visibleProgress}
+            aria-label={name}
+            className="mt-2 h-1.5"
+          />
         )}
 
         <div className="mt-1.5 flex min-w-0 flex-wrap items-center gap-x-1.5 gap-y-1 text-xs tabular-nums text-muted-foreground">
@@ -285,36 +304,39 @@ export function TaskItem({
             variant="ghost"
             size="icon"
             className="size-8 hover:text-foreground"
-            onClick={() => void handleRetry()}
+            disabled={disabled || busy}
+            onClick={() => void run(handleRetry)}
             aria-label={t("common.retry")}
             title={t("common.retry")}
           >
             <RotateCcw className="size-4" />
           </Button>
         )}
-        {(running || paused) && (
+        {(canPauseTask(task) || paused) && (
           <Button
             variant="ghost"
             size="icon"
             className="size-8 hover:text-foreground"
-            onClick={() => void handleToggle()}
-            disabled={stoppingVerify || starting}
+            onClick={() => void run(handleToggle)}
+            disabled={disabled || busy || stoppingVerify || starting}
             aria-label={
-              running
+              canPauseTask(task)
                 ? t("common.pause")
                 : starting
                   ? t("status.starting")
                   : t("common.start")
             }
             title={
-              running
+              canPauseTask(task)
                 ? t("common.pause")
                 : starting
                   ? t("status.starting")
                   : t("common.start")
             }
           >
-            {running ? (
+            {busy ? (
+              <LoaderCircle className="size-4 animate-spin" />
+            ) : canPauseTask(task) ? (
               <Pause className="size-4" />
             ) : starting ? (
               <LoaderCircle className="size-4 animate-spin" />
@@ -362,13 +384,17 @@ export function TaskItem({
               <FolderOpen className="size-4" /> {t("common.reveal")}
             </DropdownMenuItem>
             {errored && (
-              <DropdownMenuItem onClick={() => void handleRetry()}>
+              <DropdownMenuItem
+                disabled={disabled || busy}
+                onClick={() => void run(handleRetry)}
+              >
                 <RotateCcw className="size-4" /> {t("common.retry")}
               </DropdownMenuItem>
             )}
             <DropdownMenuSeparator />
             <DropdownMenuItem
               variant="destructive"
+              disabled={disabled || busy}
               onClick={() => onRemove(task)}
             >
               <Trash2 className="size-4" /> {t("task.remove")}

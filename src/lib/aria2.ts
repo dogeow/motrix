@@ -3,6 +3,7 @@ import { t } from "./i18n";
 interface Pending {
   resolve: (value: unknown) => void;
   reject: (error: Error) => void;
+  timer: ReturnType<typeof setTimeout>;
 }
 
 interface JsonRpcResponse {
@@ -19,6 +20,7 @@ export type StatusHandler = (connected: boolean) => void;
 const RECONNECT_DELAY = 1000;
 const OPEN_TIMEOUT = 8000;
 const CONNECT_TIMEOUT = 4000;
+const REQUEST_TIMEOUT = 15000;
 
 export class EngineUnavailableError extends Error {
   constructor(message: string) {
@@ -87,7 +89,14 @@ export class Aria2Client {
     try {
       return await this.sendNow<T>(method, params);
     } catch (error) {
-      if (!isEngineUnavailable(error) || this.closed) throw error;
+      // A disconnected reply does not mean a mutation failed. Replaying an
+      // add/remove/unpause could duplicate work that aria2 already accepted.
+      if (
+        !isEngineUnavailable(error) ||
+        this.closed ||
+        !/^(get|tell)/.test(method)
+      )
+        throw error;
       await this.ensureOpen();
       return this.sendNow<T>(method, params);
     }
@@ -101,18 +110,29 @@ export class Aria2Client {
         return;
       }
       const id = this.nextId++;
+      const timer = setTimeout(() => {
+        this.pending.delete(id);
+        reject(new Error(t("engine.requestTimeout")));
+      }, REQUEST_TIMEOUT);
       this.pending.set(id, {
         resolve: resolve as (value: unknown) => void,
         reject,
+        timer,
       });
-      ws.send(
-        JSON.stringify({
-          jsonrpc: "2.0",
-          id,
-          method: `aria2.${method}`,
-          params: [`token:${this.secret}`, ...params],
-        })
-      );
+      try {
+        ws.send(
+          JSON.stringify({
+            jsonrpc: "2.0",
+            id,
+            method: `aria2.${method}`,
+            params: [`token:${this.secret}`, ...params],
+          })
+        );
+      } catch (error) {
+        clearTimeout(timer);
+        this.pending.delete(id);
+        reject(error instanceof Error ? error : new Error(String(error)));
+      }
     });
   }
 
@@ -217,7 +237,9 @@ export class Aria2Client {
       this.statusHandlers.forEach((handler) => handler(false));
       this.rejectAll(new EngineUnavailableError(t("engine.disconnected")));
       if (this.closed) {
-        this.rejectOpenWaiters(new EngineUnavailableError(t("engine.notReady")));
+        this.rejectOpenWaiters(
+          new EngineUnavailableError(t("engine.notReady"))
+        );
         return;
       }
       this.reconnectTimer = setTimeout(() => {
@@ -247,6 +269,7 @@ export class Aria2Client {
     const pending = this.pending.get(Number(message.id));
     if (!pending) return;
     this.pending.delete(Number(message.id));
+    clearTimeout(pending.timer);
 
     if (message.error) {
       pending.reject(new Error(message.error.message));
@@ -256,7 +279,10 @@ export class Aria2Client {
   }
 
   private rejectAll(error: Error): void {
-    this.pending.forEach((pending) => pending.reject(error));
+    this.pending.forEach((pending) => {
+      clearTimeout(pending.timer);
+      pending.reject(error);
+    });
     this.pending.clear();
   }
 }

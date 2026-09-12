@@ -67,7 +67,9 @@ async function listKnownTasks(): Promise<Aria2Task[]> {
   return [...active, ...waiting, ...stopped];
 }
 
-async function findTaskByInfoHash(infoHash: string): Promise<Aria2Task | undefined> {
+async function findTaskByInfoHash(
+  infoHash: string
+): Promise<Aria2Task | undefined> {
   const wanted = normalizeInfoHash(infoHash);
   if (!wanted) return undefined;
   const tasks = await listKnownTasks();
@@ -76,7 +78,9 @@ async function findTaskByInfoHash(infoHash: string): Promise<Aria2Task | undefin
   );
 }
 
-async function continueExistingBt(task: Aria2Task): Promise<AddBtResult | null> {
+async function continueExistingBt(
+  task: Aria2Task
+): Promise<AddBtResult | null> {
   const name = taskName(task);
   const dir = task.dir;
   if (task.status === "complete") return { action: "complete", dir, name };
@@ -214,7 +218,9 @@ export async function addTorrent(
   return { action: "added" };
 }
 
-export async function pickDirectory(defaultPath?: string): Promise<string | null> {
+export async function pickDirectory(
+  defaultPath?: string
+): Promise<string | null> {
   const selected = await open({
     directory: true,
     multiple: false,
@@ -245,15 +251,20 @@ export async function persistSkipIntegrity(gid: string): Promise<void> {
 export async function pauseTask(task: Aria2Task): Promise<void> {
   useAppStore.getState().clearStarting([task.gid]);
   useAppStore.getState().markPausedByUser([task.gid]);
-  if (isVerifying(task) && task.status === "active") {
-    await aria2().call("forcePause", task.gid);
-  } else {
-    try {
-      await aria2().call("pause", task.gid);
-    } catch (error) {
-      if (isEngineUnavailable(error)) throw error;
+  try {
+    if (isVerifying(task) && task.status === "active") {
       await aria2().call("forcePause", task.gid);
+    } else {
+      try {
+        await aria2().call("pause", task.gid);
+      } catch (error) {
+        if (isEngineUnavailable(error)) throw error;
+        await aria2().call("forcePause", task.gid);
+      }
     }
+  } catch (error) {
+    useAppStore.getState().clearPausedByUser([task.gid]);
+    throw error;
   }
   await skipIntegrityCheck(task.gid).catch(() => {});
   refresh();
@@ -373,6 +384,14 @@ export async function removeTask(
   task: Aria2Task,
   deleteFiles: boolean
 ): Promise<void> {
+  // The confirmation keeps a stable target, but its status can change while
+  // it is open (for example, a download may finish before confirmation).
+  const current = await aria2().call<Partial<Aria2Task>>(
+    "tellStatus",
+    task.gid,
+    TASK_PAUSE_KEYS
+  );
+  task = { ...task, ...current };
   // Snapshot paths before remove — the RPC gid is gone afterwards.
   const listed = deleteFiles
     ? (task.files?.length ?? 0) > 1
@@ -496,12 +515,15 @@ export async function retryTask(
 export async function batch(
   tasks: Aria2Task[],
   action: (task: Aria2Task) => Promise<unknown>
-): Promise<{ done: number; failed: number }> {
+): Promise<{ done: number; failed: number; succeededGids: string[] }> {
   const results = await Promise.allSettled(tasks.map(action));
   refresh();
   return {
     done: results.filter((r) => r.status === "fulfilled").length,
     failed: results.filter((r) => r.status === "rejected").length,
+    succeededGids: results.flatMap((result, index) =>
+      result.status === "fulfilled" ? [tasks[index].gid] : []
+    ),
   };
 }
 

@@ -1,5 +1,19 @@
 /** Source of truth for the key space; every other locale must match it. */
 export const zhCN = {
+  "common.processing": "处理中…",
+  "toolbar.categories": "任务分类",
+  "toolbar.taskActions": "任务管理",
+  "selection.all": "全选当前列表",
+  "selection.total": "{count} 个任务",
+  "empty.loadFailed": "任务列表加载失败",
+  "empty.refreshFailed": "刷新失败，正在显示上次的数据，将自动重试",
+  "empty.searchHint": "当前分类中找不到“{query}”，试试其他关键词或分类",
+  "status.complete": "已完成",
+  "status.error": "下载失败",
+  "remove.removing": "删除中…",
+  "remove.purgeConfirm":
+    "清除所有已完成、失败和已删除的任务记录。下载的文件会保留，此操作无法撤销。",
+
   "common.cancel": "取消",
   "common.confirm": "确定",
   "common.close": "关闭",
@@ -47,6 +61,7 @@ export const zhCN = {
   "empty.hint": "点击右上角「新建任务」，或把 .torrent 文件拖进窗口",
 
   "engine.connected": "引擎已连接",
+  "engine.requestTimeout": "下载引擎响应超时，请检查任务状态后重试",
   "engine.connecting": "正在连接引擎…",
   "engine.startFailed": "下载引擎启动失败",
   "engine.reconnect": "重新连接",
@@ -78,7 +93,8 @@ export const zhCN = {
   "task.noLink": "该任务没有可复制的链接",
   "task.requeued": "已重新加入队列",
   "task.noRetryLink": "该任务没有可重试的链接",
-  "task.dirDenied": "没有该磁盘的写入权限。请选择移动硬盘上的原目录，或在系统设置 › 隐私与安全性 › 文件和文件夹中允许 Motrix 访问可移动卷。",
+  "task.dirDenied":
+    "没有该磁盘的写入权限。请选择移动硬盘上的原目录，或在系统设置 › 隐私与安全性 › 文件和文件夹中允许 Motrix 访问可移动卷。",
   "task.magnet": "磁力链接（{hash}…）",
   "task.magnetPending": "磁力链接（读取元数据中）",
 

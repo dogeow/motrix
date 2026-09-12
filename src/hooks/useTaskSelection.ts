@@ -1,21 +1,18 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
 import type { Aria2Task } from "@/lib/types";
 
-export function useTaskSelection(
-  tasks: readonly Aria2Task[],
-  visibleTasks: readonly Aria2Task[]
-) {
+export function useTaskSelection(visibleTasks: readonly Aria2Task[]) {
   const [selectedGids, setSelectedGids] = useState<Set<string>>(new Set());
 
-  // Drop selections whose task disappeared.
+  // Selection belongs to the current view; hidden tasks must not reappear selected.
   useEffect(() => {
     setSelectedGids((current) => {
       if (current.size === 0) return current;
-      const alive = new Set(tasks.map((task) => task.gid));
+      const alive = new Set(visibleTasks.map((task) => task.gid));
       const next = new Set([...current].filter((gid) => alive.has(gid)));
       return next.size === current.size ? current : next;
     });
-  }, [tasks]);
+  }, [visibleTasks]);
 
   const selectedTasks = useMemo(
     () => visibleTasks.filter((task) => selectedGids.has(task.gid)),
@@ -38,10 +35,27 @@ export function useTaskSelection(
     setSelectedGids(new Set());
   }, []);
 
+  const selectAll = useCallback(
+    (selected: boolean) => {
+      setSelectedGids(
+        new Set(selected ? visibleTasks.map((task) => task.gid) : [])
+      );
+    },
+    [visibleTasks]
+  );
+
+  const deselectTasks = useCallback((gids: readonly string[]) => {
+    setSelectedGids(
+      (current) => new Set([...current].filter((gid) => !gids.includes(gid)))
+    );
+  }, []);
+
   return {
     selectedGids,
     selectedTasks,
     setTaskSelected,
     clearSelection,
+    selectAll,
+    deselectTasks,
   };
 }

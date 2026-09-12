@@ -1,6 +1,22 @@
 import type { TranslationKey } from "./zh-CN";
 
 export const en: Record<TranslationKey, string> = {
+  "common.processing": "Processing…",
+  "toolbar.categories": "Task categories",
+  "toolbar.taskActions": "Manage tasks",
+  "selection.all": "Select all visible tasks",
+  "selection.total": "{count} tasks",
+  "empty.loadFailed": "Could not load tasks",
+  "empty.refreshFailed":
+    "Showing the last snapshot. Refresh failed and will retry automatically.",
+  "empty.searchHint":
+    "No results for “{query}” in this category. Try another keyword or category.",
+  "status.complete": "Completed",
+  "status.error": "Failed",
+  "remove.removing": "Removing…",
+  "remove.purgeConfirm":
+    "Clear all completed, failed and removed task records. Downloaded files will be kept. This cannot be undone.",
+
   "common.cancel": "Cancel",
   "common.confirm": "Confirm",
   "common.close": "Close",
@@ -48,6 +64,8 @@ export const en: Record<TranslationKey, string> = {
   "empty.hint": "Use “New task”, or drop a .torrent file onto the window",
 
   "engine.connected": "Engine connected",
+  "engine.requestTimeout":
+    "The download engine timed out. Check the task status before retrying.",
   "engine.connecting": "Connecting to engine…",
   "engine.startFailed": "The download engine failed to start",
   "engine.reconnect": "Reconnect",
@@ -79,12 +97,14 @@ export const en: Record<TranslationKey, string> = {
   "task.noLink": "This task has no link to copy",
   "task.requeued": "Queued again",
   "task.noRetryLink": "This task has no link to retry",
-  "task.dirDenied": "Cannot write to that disk. Choose the original folder on the drive, or allow Motrix to access removable volumes in System Settings › Privacy & Security › Files and Folders.",
+  "task.dirDenied":
+    "Cannot write to that disk. Choose the original folder on the drive, or allow Motrix to access removable volumes in System Settings › Privacy & Security › Files and Folders.",
   "task.magnet": "Magnet link ({hash}…)",
   "task.magnetPending": "Magnet link (fetching metadata)",
 
   "add.title": "New task",
-  "add.description": "Supports HTTP, HTTPS, FTP, magnet links and torrent files",
+  "add.description":
+    "Supports HTTP, HTTPS, FTP, magnet links and torrent files",
   "add.tabUri": "Links",
   "add.tabTorrent": "Torrent file",
   "add.uriPlaceholder":
@@ -172,9 +192,11 @@ export const en: Record<TranslationKey, string> = {
   "prefs.connections": "Max connections per server",
   "prefs.split": "Split per task",
   "prefs.downLimit": "Global download limit",
-  "prefs.downLimitHint": "0 is unlimited; bare numbers mean KB/s; accepts 512K / 2M",
+  "prefs.downLimitHint":
+    "0 is unlimited; bare numbers mean KB/s; accepts 512K / 2M",
   "prefs.upLimit": "Global upload limit",
-  "prefs.upLimitHint": "0 is unlimited; bare numbers mean KB/s; minimum stable BT limit is 16 KB/s",
+  "prefs.upLimitHint":
+    "0 is unlimited; bare numbers mean KB/s; minimum stable BT limit is 16 KB/s",
   "prefs.seedRatio": "Seed ratio",
   "prefs.seedRatioHint": "Stop seeding at this ratio; 0 seeds forever",
   "prefs.trackers": "Tracker list",
