@@ -1,4 +1,4 @@
-import { Fragment, type ReactNode } from "react";
+import { Fragment, memo, type ReactNode } from "react";
 import {
   CircleCheck,
   Copy,
@@ -43,11 +43,10 @@ import {
   taskName,
   taskProgress,
 } from "@/lib/format";
-import { t } from "@/lib/i18n";
+import { t, useTranslation } from "@/lib/i18n";
 import {
   btPeerCounts,
   isConnectingTask,
-  isStartingTask,
   verifyBadge,
 } from "@/lib/integrity";
 import { cn } from "@/lib/utils";
@@ -66,7 +65,7 @@ interface TaskItemProps {
   onInspect: (task: Aria2Task) => void;
 }
 
-export function TaskItem({
+export const TaskItem = memo(function TaskItem({
   task,
   selected,
   disabled,
@@ -74,6 +73,7 @@ export function TaskItem({
   onRemove,
   onInspect,
 }: TaskItemProps) {
+  useTranslation();
   const { busy, run } = useAsyncAction();
   const name = taskName(task);
   const progress = taskProgress(task);
@@ -83,12 +83,11 @@ export function TaskItem({
   const complete = task.status === "complete";
   const errored = task.status === "error";
   const total = Number(task.totalLength);
-  const pausedByUserGids = useAppStore((state) => state.pausedByUserGids);
-  const startingGids = useAppStore((state) => state.startingGids);
-  const starting = isStartingTask(task, startingGids);
-  const connecting = isConnectingTask(task, startingGids);
+  const pausedByUser = useAppStore((state) => state.pausedByUserGids.includes(task.gid));
+  const starting = useAppStore((state) => state.startingGids.includes(task.gid)) && paused;
+  const connecting = isConnectingTask(task);
   const queued = task.status === "waiting" && !starting;
-  const badge = verifyBadge(task, pausedByUserGids);
+  const badge = verifyBadge(task, pausedByUser ? [task.gid] : []);
   const verifying = badge === "verifying" || badge === "stopping";
   const verifyPending = badge === "pending";
   const stoppingVerify = badge === "stopping";
@@ -404,4 +403,4 @@ export function TaskItem({
       </div>
     </div>
   );
-}
+});

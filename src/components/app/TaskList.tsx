@@ -1,3 +1,4 @@
+import { useCallback, useMemo } from "react";
 import {
   CircleAlert,
   Inbox,
@@ -9,6 +10,7 @@ import {
 import { TaskItem } from "@/components/TaskItem";
 import { Button } from "@/components/ui/button";
 import { ScrollArea } from "@/components/ui/scroll-area";
+import { useVirtualTaskList } from "@/hooks/useVirtualTaskList";
 import { t } from "@/lib/i18n";
 import type { Aria2Task, Category } from "@/lib/types";
 
@@ -16,6 +18,8 @@ interface TaskListProps {
   tasks: readonly Aria2Task[];
   category: Category;
   query: string;
+  sortKey?: string;
+  statusFilter?: string;
   initError: string | null;
   refreshError: string | null;
   loading: boolean;
@@ -34,6 +38,8 @@ export function TaskList({
   tasks,
   category,
   query,
+  sortKey = "added",
+  statusFilter = "all",
   initError,
   refreshError,
   loading,
@@ -47,8 +53,18 @@ export function TaskList({
   onRemove,
   onInspect,
 }: TaskListProps) {
+  const keys = useMemo(() => tasks.map((task) => task.gid), [tasks]);
+  const { viewportRef, listRef, layout, rows, measureRow, retainFocusedRow } =
+    useVirtualTaskList(keys, JSON.stringify([category, query, sortKey, statusFilter]));
+  const filtered = Boolean(query.trim()) || statusFilter !== "all";
+
   return (
-    <ScrollArea className="min-h-0 flex-1 bg-muted/15" aria-busy={loading}>
+    <ScrollArea
+      className="min-h-0 flex-1 bg-muted/15"
+      aria-busy={loading}
+      viewportRef={viewportRef}
+      viewportProps={{ tabIndex: 0, "aria-label": t("task.list") }}
+    >
       {initError ? (
         <EmptyState
           icon={<CircleAlert className="size-6 text-destructive" />}
@@ -89,24 +105,26 @@ export function TaskList({
       ) : tasks.length === 0 ? (
         <EmptyState
           icon={
-            query.trim() ? (
+            filtered ? (
               <SearchX className="size-6" />
             ) : (
               <Inbox className="size-6" />
             )
           }
-          title={query.trim() ? t("empty.noMatch") : t(`empty.${category}`)}
+          title={filtered ? t("empty.noMatch") : t(`empty.${category}`)}
           detail={
             query.trim()
               ? t("empty.searchHint", { query: query.trim() })
+              : filtered
+                ? t("empty.filterHint")
               : category === "all" || category === "active"
                 ? t("empty.hint")
                 : undefined
           }
           action={
-            query.trim() ? (
+            filtered ? (
               <Button variant="outline" size="sm" onClick={onClearSearch}>
-                {t("toolbar.clearSearch")}
+                {t("toolbar.clearFilters")}
               </Button>
             ) : category === "all" || category === "active" ? (
               <Button size="sm" onClick={onAddTask}>
@@ -127,20 +145,71 @@ export function TaskList({
               {connected ? t("empty.refreshFailed") : t("engine.disconnected")}
             </div>
           )}
-          {tasks.map((task) => (
-            <TaskItem
-              key={task.gid}
-              task={task}
-              selected={selectedGids.has(task.gid)}
-              disabled={busy || !connected}
-              onSelectedChange={onSelectedChange}
-              onRemove={onRemove}
-              onInspect={onInspect}
-            />
-          ))}
+          <div
+            ref={listRef}
+            role="list"
+            aria-label={t("task.list")}
+            className="relative"
+            style={{ height: layout.totalHeight, overflowAnchor: "none" }}
+          >
+            {rows.map((index) => {
+              const task = tasks[index];
+              return (
+                <VirtualTaskRow
+                  key={task.gid}
+                  task={task}
+                  top={layout.offsets[index]}
+                  position={index + 1}
+                  total={tasks.length}
+                  selected={selectedGids.has(task.gid)}
+                  disabled={busy || !connected}
+                  measureRow={measureRow}
+                  retainFocusedRow={retainFocusedRow}
+                  onSelectedChange={onSelectedChange}
+                  onRemove={onRemove}
+                  onInspect={onInspect}
+                />
+              );
+            })}
+          </div>
         </div>
       )}
     </ScrollArea>
+  );
+}
+
+function VirtualTaskRow({
+  top,
+  position,
+  total,
+  measureRow,
+  retainFocusedRow,
+  ...props
+}: React.ComponentProps<typeof TaskItem> & {
+  top: number;
+  position: number;
+  total: number;
+  measureRow: (key: string, element: HTMLDivElement | null) => void;
+  retainFocusedRow: (key: string) => void;
+}) {
+  const gid = props.task.gid;
+  const rowRef = useCallback(
+    (element: HTMLDivElement | null) => measureRow(gid, element),
+    [gid, measureRow]
+  );
+  return (
+    <div
+      ref={rowRef}
+      role="listitem"
+      aria-posinset={position}
+      aria-setsize={total}
+      data-task-row={gid}
+      className="absolute inset-x-0"
+      style={{ top }}
+      onFocusCapture={() => retainFocusedRow(gid)}
+    >
+      <TaskItem {...props} />
+    </div>
   );
 }
 

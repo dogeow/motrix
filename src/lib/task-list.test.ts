@@ -4,6 +4,7 @@ import {
   filterAndSortTasks,
   stabilizeTaskOrder,
   sortTasks,
+  STATUS_FILTERS,
 } from "@/lib/task-list";
 import type { Aria2Task, GlobalStat } from "@/lib/types";
 
@@ -65,6 +66,31 @@ describe("filterAndSortTasks", () => {
     ]);
     expect(sortTasks(tasks, "speed").map(({ gid }) => gid)).toEqual(["a", "b"]);
     expect(tasks.map(({ gid }) => gid)).toEqual(["a", "b"]);
+  });
+
+  it("combines status and name filters before sorting", () => {
+    const mixed = [
+      task("failed", "Report.zip", { status: "error" }),
+      task("complete", "Report.pdf", { status: "complete" }),
+      task("other", "Photo.zip", { status: "error" }),
+    ];
+    expect(filterAndSortTasks(mixed, "REPORT", "name", "error").map(({ gid }) => gid))
+      .toEqual(["failed"]);
+    expect(filterAndSortTasks(mixed, "", "added", "paused")).toEqual([]);
+    expect(filterAndSortTasks(mixed, "", "added")).toEqual(mixed);
+  });
+
+  it("offers only states that can occur in each engine category", () => {
+    expect(STATUS_FILTERS.waiting).toEqual(["all", "waiting", "paused"]);
+    expect(STATUS_FILTERS.stopped).toEqual(["all", "complete", "error", "removed"]);
+    expect(STATUS_FILTERS.active).toEqual(["all"]);
+  });
+
+  it("sorts numbered filenames naturally in either supported locale", () => {
+    const numbered = [task("10", "Part 10.zip"), task("2", "Part 2.zip"), task("1", "Part 1.zip")];
+    for (const locale of ["zh-CN", "en"] as const) {
+      expect(sortTasks(numbered, "name", locale).map(({ gid }) => gid)).toEqual(["1", "2", "10"]);
+    }
   });
 });
 

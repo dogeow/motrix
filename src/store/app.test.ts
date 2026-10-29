@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import type { Aria2Task } from "@/lib/types";
+import type { Aria2File, Aria2Task, GlobalStat } from "@/lib/types";
 
 const { call } = vi.hoisted(() => ({ call: vi.fn() }));
 vi.mock("@tauri-apps/api/core", () => ({
@@ -25,10 +25,34 @@ function task(gid: string, status: Aria2Task["status"]): Aria2Task {
   return {
     gid,
     status,
+    totalLength: "100",
+    completedLength: "0",
+    uploadLength: "0",
+    downloadSpeed: "0",
+    uploadSpeed: "0",
+    connections: "0",
+    dir: "/downloads",
     files: [],
     bittorrent: { info: { name: gid } },
-  } as unknown as Aria2Task;
+  };
 }
+function downloadFile(path: string): Aria2File {
+  return {
+    index: "1",
+    path,
+    length: "100",
+    completedLength: "0",
+    selected: "true",
+    uris: [],
+  };
+}
+const globalStat: GlobalStat = {
+  downloadSpeed: "0",
+  uploadSpeed: "0",
+  numActive: "1",
+  numWaiting: "1",
+  numStopped: "0",
+};
 function deferred<T>() {
   let resolve!: (value: T) => void;
   const promise = new Promise<T>((done) => {
@@ -43,7 +67,7 @@ beforeEach(() => {
   call.mockReset();
   call.mockImplementation(async (method: string) =>
     method === "getGlobalStat"
-      ? { numActive: "1", numWaiting: "1", numStopped: "0" }
+      ? { ...globalStat }
       : []
   );
 });
@@ -59,6 +83,218 @@ async function setup() {
 }
 
 describe("task list refresh", () => {
+  it("does not notify subscribers for an unchanged polling snapshot", async () => {
+    const store = await setup();
+    call.mockImplementation(async (method: string) => {
+      if (method === "tellActive") return [task("download", "active")];
+      return method === "getGlobalStat" ? { ...globalStat } : [];
+    });
+    await store.getState().refresh();
+    const previous = store.getState();
+    const subscriber = vi.fn();
+    const unsubscribe = store.subscribe(subscriber);
+    await store.getState().refresh();
+    unsubscribe();
+    expect(subscriber).not.toHaveBeenCalled();
+    expect(store.getState()).toBe(previous);
+  });
+
+  it("reuses unchanged task objects when a peer's progress changes", async () => {
+    const store = await setup();
+    let completedLength = "0";
+    call.mockImplementation(async (method: string) => {
+      if (method === "tellActive") {
+        return [
+          task("unchanged", "active"),
+          { ...task("progress", "active"), completedLength },
+        ];
+      }
+      return method === "getGlobalStat" ? { ...globalStat } : [];
+    });
+    await store.getState().refresh();
+    const previous = store.getState();
+    completedLength = "50";
+    await store.getState().refresh();
+    const next = store.getState();
+    expect(next.tasks).not.toBe(previous.tasks);
+    expect(next.tasks.find((item) => item.gid === "unchanged")).toBe(
+      previous.tasks.find((item) => item.gid === "unchanged")
+    );
+    expect(next.tasks.find((item) => item.gid === "progress")).toMatchObject({
+      completedLength: "50",
+    });
+    expect(next.stat).toBe(previous.stat);
+    expect(next.startingGids).toBe(previous.startingGids);
+  });
+
+  it("publishes nested torrent-name changes without losing hydrated files", async () => {
+    const store = await setup();
+    let name = "original";
+    call.mockImplementation(async (method: string) => {
+      if (method === "tellActive") {
+        return [
+          { ...task("torrent", "active"), bittorrent: { info: { name } } },
+        ];
+      }
+      return method === "getGlobalStat" ? { ...globalStat } : [];
+    });
+    store.setState({
+      tasks: [
+        {
+          ...task("torrent", "active"),
+          files: [downloadFile("/downloads/a")],
+        },
+      ],
+    });
+    await store.getState().refresh();
+    const previous = store.getState().tasks[0];
+    name = "renamed";
+    await store.getState().refresh();
+    const next = store.getState().tasks[0];
+    expect(next).not.toBe(previous);
+    expect(next.bittorrent?.info?.name).toBe("renamed");
+    expect(next.files).toBe(previous.files);
+  });
+
+  it("updates global statistics without replacing unchanged tasks", async () => {
+    const store = await setup();
+    let downloadSpeed = "0";
+    call.mockImplementation(async (method: string) => {
+      if (method === "tellActive") return [task("download", "active")];
+      return method === "getGlobalStat" ? { ...globalStat, downloadSpeed } : [];
+    });
+    await store.getState().refresh();
+    const previous = store.getState();
+    downloadSpeed = "4096";
+    await store.getState().refresh();
+    expect(store.getState().stat?.downloadSpeed).toBe("4096");
+    expect(store.getState().tasks).toBe(previous.tasks);
+  });
+
+  it("hydrates names in bounded parallel batches without duplicate requests", async () => {
+    const store = await setup();
+    const details = new Map<
+      string,
+      ReturnType<typeof deferred<{ files: Aria2File[] }>>
+    >();
+    call.mockImplementation(async (method: string, gid?: string) => {
+      if (method === "tellActive") {
+        return Array.from({ length: 10 }, (_, index) => ({
+          ...task(`http-${index}`, "active"),
+          bittorrent: undefined,
+        }));
+      }
+      if (method === "tellStatus") {
+        const detail = deferred<{ files: Aria2File[] }>();
+        details.set(gid!, detail);
+        return detail.promise;
+      }
+      return method === "getGlobalStat" ? { ...globalStat } : [];
+    });
+    await store.getState().refresh();
+    expect(details.size).toBe(8);
+    const subscriber = vi.fn();
+    const unsubscribe = store.subscribe(subscriber);
+    await store.getState().refresh();
+    expect(
+      call.mock.calls.filter(([method]) => method === "tellStatus")
+    ).toHaveLength(8);
+    expect(subscriber).not.toHaveBeenCalled();
+    for (const [gid, detail] of details) {
+      detail.resolve({ files: [downloadFile(`/downloads/${gid}.zip`)] });
+    }
+    await vi.waitFor(() => {
+      expect(
+        store.getState().tasks.filter((item) => item.files.length)
+      ).toHaveLength(8);
+    });
+    expect(subscriber).toHaveBeenCalledTimes(1);
+    unsubscribe();
+    await store.getState().refresh();
+    expect(details.size).toBe(10);
+    for (const [gid, detail] of details) {
+      detail.resolve({ files: [downloadFile(`/downloads/${gid}.zip`)] });
+    }
+    await vi.waitFor(() => {
+      expect(
+        store.getState().tasks.every((item) => item.files.length === 1)
+      ).toBe(true);
+    });
+  });
+
+  it("rotates failed name lookups so later HTTP tasks still get names", async () => {
+    const store = await setup();
+    const lookedUp: string[] = [];
+    call.mockImplementation(async (method: string, gid?: string) => {
+      if (method === "tellActive") {
+        return Array.from({ length: 10 }, (_, index) => ({
+          ...task(`http-${index}`, "active"),
+          bittorrent: undefined,
+        }));
+      }
+      if (method === "tellStatus") {
+        lookedUp.push(gid!);
+        if (Number(gid!.split("-")[1]) >= 2) throw new Error("Missing files");
+        return { files: [downloadFile(`/downloads/${gid}.zip`)] };
+      }
+      return method === "getGlobalStat" ? { ...globalStat } : [];
+    });
+    await store.getState().refresh();
+    expect(lookedUp).toHaveLength(8);
+    await store.getState().refresh();
+    await vi.waitFor(() => {
+      expect(
+        store.getState().tasks.find((item) => item.gid === "http-0")?.files[0]
+          ?.path
+      ).toBe("/downloads/http-0.zip");
+      expect(
+        store.getState().tasks.find((item) => item.gid === "http-1")?.files[0]
+          ?.path
+      ).toBe("/downloads/http-1.zip");
+    });
+  });
+
+  it("discards stale name hydration after switching categories", async () => {
+    const store = await setup();
+    const oldDetail = deferred<{ files: Aria2File[] }>();
+    let detailCalls = 0;
+    call.mockImplementation(async (method: string) => {
+      if (method === "tellActive" || method === "tellWaiting") {
+        return [
+          {
+            ...task("http", method === "tellActive" ? "active" : "paused"),
+            bittorrent: undefined,
+          },
+        ];
+      }
+      if (method === "tellStatus") {
+        detailCalls += 1;
+        return detailCalls === 1
+          ? oldDetail.promise
+          : { files: [downloadFile("/downloads/current.zip")] };
+      }
+      return method === "getGlobalStat" ? { ...globalStat } : [];
+    });
+    store.getState().setCategory("active");
+    await store.getState().refresh();
+    store.getState().setCategory("waiting");
+    await store.getState().refresh();
+    const subscriber = vi.fn();
+    const unsubscribe = store.subscribe(subscriber);
+    oldDetail.resolve({ files: [downloadFile("/downloads/stale.zip")] });
+    // Allow the detached hydration promise to finish without another refresh.
+    for (let tick = 0; tick < 6; tick += 1) await Promise.resolve();
+    expect(subscriber).not.toHaveBeenCalled();
+    expect(store.getState().tasks[0].files).toEqual([]);
+    unsubscribe();
+    await store.getState().refresh();
+    await vi.waitFor(() => {
+      expect(store.getState().tasks[0].files[0]?.path).toBe(
+        "/downloads/current.zip"
+      );
+    });
+  });
+
   it("keeps hydrated HTTP names when clearing the old category during a switch", async () => {
     const store = await setup();
     const file = {

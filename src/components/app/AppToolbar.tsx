@@ -4,6 +4,7 @@ import {
   Download,
   Ellipsis,
   Eraser,
+  ListFilter,
   Pause,
   Play,
   Plus,
@@ -27,10 +28,12 @@ import {
   CATEGORY_TABS,
   SORT_KEYS,
   categoryTaskCount,
+  STATUS_FILTERS,
   type SortKey,
+  type TaskStatusFilter,
 } from "@/lib/task-list";
 import { t } from "@/lib/i18n";
-import type { Category, GlobalStat } from "@/lib/types";
+import type { Aria2Task, Category, GlobalStat } from "@/lib/types";
 import { cn } from "@/lib/utils";
 
 const IS_MAC = navigator.userAgent.includes("Macintosh");
@@ -43,9 +46,12 @@ interface AppToolbarProps {
   stat: GlobalStat | null;
   query: string;
   sortKey: SortKey;
+  statusFilter: TaskStatusFilter;
+  tasks: readonly Aria2Task[];
   onCategoryChange: (category: Category) => void;
   onQueryChange: (query: string) => void;
   onSortChange: (sortKey: SortKey) => void;
+  onStatusFilterChange: (filter: TaskStatusFilter) => void;
   onPurgeStopped: () => void;
   onPauseAll: () => void;
   onResumeAll: () => void;
@@ -61,9 +67,12 @@ export function AppToolbar({
   stat,
   query,
   sortKey,
+  statusFilter,
+  tasks,
   onCategoryChange,
   onQueryChange,
   onSortChange,
+  onStatusFilterChange,
   onPurgeStopped,
   onPauseAll,
   onResumeAll,
@@ -145,6 +154,34 @@ export function AppToolbar({
           )}
         </div>
         <div className="flex items-center gap-1">
+          {STATUS_FILTERS[category].length > 1 && (
+            <DropdownMenu>
+              <DropdownMenuTrigger asChild>
+                <Button
+                  variant="ghost"
+                  size="icon"
+                  className={cn("relative size-8 text-muted-foreground", statusFilter !== "all" && "bg-accent text-foreground")}
+                  aria-label={t("toolbar.filterStatus")}
+                  title={`${t("toolbar.filterStatus")} · ${t(`filter.${statusFilter}`)}`}
+                >
+                  <ListFilter className="size-4" />
+                  {statusFilter !== "all" && <span className="absolute top-1 right-1 size-1.5 rounded-full bg-primary" aria-hidden="true" />}
+                </Button>
+              </DropdownMenuTrigger>
+              <DropdownMenuContent align="end" className="min-w-44">
+                <DropdownMenuRadioGroup value={statusFilter} onValueChange={(value) => onStatusFilterChange(value as TaskStatusFilter)}>
+                  {STATUS_FILTERS[category].map((value) => (
+                    <DropdownMenuRadioItem key={value} value={value} className="gap-4">
+                      {t(`filter.${value}`)}
+                      <span className="ml-auto text-xs tabular-nums text-muted-foreground">
+                        {value === "all" ? tasks.length : tasks.filter((task) => task.status === value).length}
+                      </span>
+                    </DropdownMenuRadioItem>
+                  ))}
+                </DropdownMenuRadioGroup>
+              </DropdownMenuContent>
+            </DropdownMenu>
+          )}
           <DropdownMenu>
             <DropdownMenuTrigger asChild>
               <Button

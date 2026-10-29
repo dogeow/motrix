@@ -1,7 +1,21 @@
 import { taskName } from "@/lib/format";
-import type { Aria2Task, Category, GlobalStat } from "@/lib/types";
+import type { Locale } from "@/lib/i18n";
+import type { Aria2Task, Category, GlobalStat, TaskStatus } from "@/lib/types";
 
 export type SortKey = "added" | "name" | "size" | "progress" | "speed";
+export type TaskStatusFilter = "all" | TaskStatus;
+
+export const STATUS_FILTERS: Record<Category, readonly TaskStatusFilter[]> = {
+  all: ["all", "active", "waiting", "paused", "complete", "error", "removed"],
+  active: ["all"],
+  waiting: ["all", "waiting", "paused"],
+  stopped: ["all", "complete", "error", "removed"],
+};
+
+const nameCollators: Record<Locale, Intl.Collator> = {
+  "zh-CN": new Intl.Collator("zh-CN", { numeric: true, sensitivity: "base" }),
+  en: new Intl.Collator("en", { numeric: true, sensitivity: "base" }),
+};
 
 export const SORT_KEYS: readonly SortKey[] = [
   "added",
@@ -40,7 +54,8 @@ export function categoryTaskCount(
 
 export function sortTasks(
   tasks: readonly Aria2Task[],
-  key: SortKey
+  key: SortKey,
+  locale: Locale = "zh-CN"
 ): Aria2Task[] {
   const sorted = [...tasks];
   switch (key) {
@@ -48,7 +63,7 @@ export function sortTasks(
       return sorted;
     case "name":
       return sorted.sort((a, b) =>
-        taskName(a).localeCompare(taskName(b), "zh")
+        nameCollators[locale].compare(taskName(a), taskName(b))
       );
     case "size":
       return sorted.sort(
@@ -66,13 +81,18 @@ export function sortTasks(
 export function filterAndSortTasks(
   tasks: readonly Aria2Task[],
   query: string,
-  sortKey: SortKey
+  sortKey: SortKey,
+  statusFilter: TaskStatusFilter = "all",
+  locale: Locale = "zh-CN"
 ): Aria2Task[] {
   const needle = query.trim().toLowerCase();
-  const filtered = needle
-    ? tasks.filter((task) => taskName(task).toLowerCase().includes(needle))
+  const filtered = needle || statusFilter !== "all"
+    ? tasks.filter((task) =>
+        (statusFilter === "all" || task.status === statusFilter) &&
+        (!needle || taskName(task).toLowerCase().includes(needle))
+      )
     : tasks;
-  return sortTasks(filtered, sortKey);
+  return sortTasks(filtered, sortKey, locale);
 }
 
 /**

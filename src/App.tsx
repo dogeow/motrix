@@ -1,4 +1,4 @@
-import { useMemo, useRef, useState } from "react";
+import { useCallback, useDeferredValue, useMemo, useRef, useState } from "react";
 import { toast } from "sonner";
 import { AddTaskDialog } from "@/components/AddTaskDialog";
 import { PreferencesDialog } from "@/components/PreferencesDialog";
@@ -24,15 +24,15 @@ import {
 } from "@/lib/actions";
 import { canPauseTask, canResumeTask } from "@/lib/task-actions";
 import { t, useTranslation } from "@/lib/i18n";
-import { filterAndSortTasks, type SortKey } from "@/lib/task-list";
-import type { Aria2Task } from "@/lib/types";
+import { filterAndSortTasks, type SortKey, type TaskStatusFilter } from "@/lib/task-list";
+import type { Aria2Task, Category } from "@/lib/types";
 import { useAppStore } from "@/store/app";
 
 export default function App() {
   const resolvedTheme = useTheme();
   useAppLifecycle();
   // Subscribing re-renders every label when the locale changes.
-  useTranslation();
+  const { locale } = useTranslation();
 
   const connected = useAppStore((state) => state.connected);
   const category = useAppStore((state) => state.category);
@@ -51,13 +51,24 @@ export default function App() {
   const [inspectTarget, setInspectTarget] = useState<Aria2Task | null>(null);
   const [query, setQuery] = useState("");
   const [sortKey, setSortKey] = useState<SortKey>("added");
+  const [statusFilter, setStatusFilter] = useState<TaskStatusFilter>("all");
+  const deferredQuery = useDeferredValue(query);
   const searchRef = useRef<HTMLInputElement>(null);
   const { busy, run } = useAsyncAction();
 
   const visibleTasks = useMemo(
-    () => filterAndSortTasks(tasks, query, sortKey),
-    [query, sortKey, tasks]
+    () => filterAndSortTasks(tasks, deferredQuery, sortKey, statusFilter, locale),
+    [deferredQuery, sortKey, statusFilter, tasks, locale]
   );
+  const changeCategory = useCallback((next: Category) => {
+    setStatusFilter("all");
+    setCategory(next);
+  }, [setCategory]);
+  const clearFilters = useCallback(() => {
+    setQuery("");
+    setStatusFilter("all");
+  }, []);
+  const removeTask = useCallback((task: Aria2Task) => setRemoveTargets([task]), []);
   const {
     selectedGids,
     selectedTasks,
@@ -110,9 +121,12 @@ export default function App() {
         stat={stat}
         query={query}
         sortKey={sortKey}
-        onCategoryChange={setCategory}
+        statusFilter={statusFilter}
+        tasks={tasks}
+        onCategoryChange={changeCategory}
         onQueryChange={setQuery}
         onSortChange={setSortKey}
+        onStatusFilterChange={setStatusFilter}
         onPurgeStopped={() => setPurgeOpen(true)}
         onPauseAll={() => void run(pauseAll)}
         onResumeAll={() => void run(resumeAll)}
@@ -123,6 +137,9 @@ export default function App() {
       <SelectionToolbar
         count={selectedTasks.length}
         total={visibleTasks.length}
+        unfilteredTotal={tasks.length}
+        filterLabel={statusFilter === "all" ? undefined : t(`filter.${statusFilter}`)}
+        onClearFilters={clearFilters}
         busy={busy}
         canStart={connected && resumableTasks.length > 0}
         canPause={connected && pausableTasks.length > 0}
@@ -143,7 +160,9 @@ export default function App() {
       <TaskList
         tasks={visibleTasks}
         category={category}
-        query={query}
+        query={deferredQuery}
+        sortKey={sortKey}
+        statusFilter={statusFilter}
         initError={initError}
         loading={loading}
         connected={connected}
@@ -151,10 +170,10 @@ export default function App() {
         busy={busy}
         onRefresh={() => void refresh()}
         onAddTask={() => setAddOpen(true)}
-        onClearSearch={() => setQuery("")}
+        onClearSearch={clearFilters}
         selectedGids={selectedGids}
         onSelectedChange={setTaskSelected}
-        onRemove={(task) => setRemoveTargets([task])}
+        onRemove={removeTask}
         onInspect={setInspectTarget}
       />
 

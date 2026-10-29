@@ -22,6 +22,7 @@ export function useTaskSelection(visibleTasks: readonly Aria2Task[]) {
   const setTaskSelected = useCallback(
     (task: Aria2Task, isSelected: boolean) => {
       setSelectedGids((current) => {
+        if (current.has(task.gid) === isSelected) return current;
         const next = new Set(current);
         if (isSelected) next.add(task.gid);
         else next.delete(task.gid);
@@ -45,9 +46,12 @@ export function useTaskSelection(visibleTasks: readonly Aria2Task[]) {
   );
 
   const deselectTasks = useCallback((gids: readonly string[]) => {
-    setSelectedGids(
-      (current) => new Set([...current].filter((gid) => !gids.includes(gid)))
-    );
+    if (gids.length === 0) return;
+    const removed = new Set(gids);
+    setSelectedGids((current) => {
+      const next = new Set([...current].filter((gid) => !removed.has(gid)));
+      return next.size === current.size ? current : next;
+    });
   }, []);
 
   return {

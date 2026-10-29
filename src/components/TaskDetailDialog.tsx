@@ -45,6 +45,10 @@ import {
 import { formatBytes, formatSpeed, taskName } from "@/lib/format";
 import { t } from "@/lib/i18n";
 import {
+  createFileSelectionDraft,
+  startDetailPolling,
+} from "@/lib/task-detail-session";
+import {
   FILE_KIND_FILTERS,
   FILE_SORT_DEFAULT_DIR,
   FILE_SORT_KEYS,
@@ -71,13 +75,24 @@ const FILE_LIST_HEIGHT = 288;
 type DetailTab = "files" | "peers" | "servers";
 
 export function TaskDetailDialog({ task, onClose }: TaskDetailDialogProps) {
-  const [files, setFiles] = useState<Aria2File[]>([]);
+  return (
+    <TaskDetailContent key={task?.gid ?? "closed"} task={task} onClose={onClose} />
+  );
+}
+
+function TaskDetailContent({ task, onClose }: TaskDetailDialogProps) {
+  const [files, setFiles] = useState<Aria2File[]>(() => task?.files ?? []);
   const [peers, setPeers] = useState<Aria2Peer[]>([]);
   const [servers, setServers] = useState<Aria2ServerEntry[]>([]);
-  const [selection, setSelection] = useState<Set<string>>(new Set());
-  const [dirty, setDirty] = useState(false);
-  const [saving, setSaving] = useState(false);
-  const [loading, setLoading] = useState(false);
+  const [selectionDraft] = useState(() =>
+    createFileSelectionDraft(task?.files ?? [])
+  );
+  const [{ selection, dirty, saving }, setSelectionState] = useState(() =>
+    selectionDraft.snapshot()
+  );
+  const [loading, setLoading] = useState(
+    Boolean(task) && (task?.files?.length ?? 0) === 0
+  );
   const [extraLoading, setExtraLoading] = useState(false);
   const [tab, setTab] = useState<DetailTab>("files");
   const [fileSort, setFileSort] = useState<FileSortKey>("progress");
@@ -87,124 +102,67 @@ export function TaskDetailDialog({ task, onClose }: TaskDetailDialogProps) {
 
   const gid = task?.gid ?? null;
   const isBt = Boolean(task?.bittorrent);
-  const gidRef = useRef(gid);
-  gidRef.current = gid;
-  const [openedGid, setOpenedGid] = useState<string | null>(gid);
+  const mountedRef = useRef(false);
 
-  if (gid !== openedGid) {
-    setOpenedGid(gid);
-    const seed = task?.files ?? [];
-    setFiles(seed);
-    setPeers([]);
-    setServers([]);
-    setSelection(
-      new Set(seed.filter((file) => file.selected === "true").map((file) => file.index))
-    );
-    setDirty(false);
-    setSaving(false);
-    setLoading(Boolean(gid) && seed.length === 0);
-    setExtraLoading(false);
-    setTab("files");
-    setFileSort("progress");
-    setSortDir("desc");
-    setStatusFilter("all");
-    setKindFilter("all");
-  }
+  useEffect(() => {
+    mountedRef.current = true;
+    return () => {
+      mountedRef.current = false;
+    };
+  }, []);
 
   const activeTab: DetailTab = !isBt && tab === "peers" ? "files" : tab;
 
-  const reload = useCallback(async () => {
-    const current = gid;
-    if (!current) return;
-    try {
-      const list = await getFiles(current);
-      if (gidRef.current !== current) return;
-      setFiles(list);
-      setSelection((selected) =>
-        dirty
-          ? selected
-          : new Set(
-              list.filter((file) => file.selected === "true").map((file) => file.index)
-            )
-      );
-    } catch {
-      // Task may have been removed while the dialog was open.
-    } finally {
-      if (gidRef.current === current) setLoading(false);
-    }
-  }, [gid, dirty]);
-
   useEffect(() => {
     if (!gid) return;
-    void reload();
-    const timer = setInterval(() => void reload(), REFRESH_INTERVAL);
-    return () => clearInterval(timer);
-  }, [gid, reload]);
+    return startDetailPolling({
+      load: async () => {
+        const revision = selectionDraft.snapshot().revision;
+        return { list: await getFiles(gid), revision };
+      },
+      onResult: ({ list, revision }) => {
+        setFiles(list);
+        selectionDraft.sync(list, revision);
+        setSelectionState(selectionDraft.snapshot());
+      },
+      onSettled: () => setLoading(false),
+      interval: REFRESH_INTERVAL,
+    });
+  }, [gid, selectionDraft]);
 
   useEffect(() => {
     if (!gid || activeTab === "files") return;
-    let cancelled = false;
-
-    const load = (refresh: boolean) => {
-      if (activeTab === "peers") {
-        if (!isBt) return;
-        if (!refresh) setExtraLoading(true);
-        void getPeers(gid)
-          .then((list) => {
-            if (!cancelled) setPeers(list);
-          })
-          .catch(() => {
-            if (!cancelled) setPeers([]);
-          })
-          .finally(() => {
-            if (!cancelled && !refresh) setExtraLoading(false);
-          });
-        return;
-      }
-      if (!refresh) setExtraLoading(true);
-      void getServers(gid)
-        .then((list) => {
-          if (!cancelled) setServers(list);
-        })
-        .catch(() => {
-          if (!cancelled) setServers([]);
-        })
-        .finally(() => {
-          if (!cancelled && !refresh) setExtraLoading(false);
-        });
-    };
-
-    load(false);
-    const timer = setInterval(() => load(true), REFRESH_INTERVAL);
-    return () => {
-      cancelled = true;
-      clearInterval(timer);
-    };
+    setExtraLoading(true);
+    if (activeTab === "peers") {
+      return startDetailPolling({
+        load: () => getPeers(gid),
+        onResult: setPeers,
+        onSettled: () => setExtraLoading(false),
+        interval: REFRESH_INTERVAL,
+      });
+    }
+    return startDetailPolling({
+      load: () => getServers(gid),
+      onResult: setServers,
+      onSettled: () => setExtraLoading(false),
+      interval: REFRESH_INTERVAL,
+    });
   }, [gid, activeTab, isBt]);
 
-  const toggle = useCallback((index: string, checked: boolean) => {
-    setSelection((current) => {
-      const next = new Set(current);
-      if (checked) next.add(index);
-      else next.delete(index);
-      return next;
-    });
-    setDirty(true);
-  }, []);
+  const toggle = useCallback(
+    (index: string, checked: boolean) => {
+      selectionDraft.toggle([index], checked);
+      setSelectionState(selectionDraft.snapshot());
+    },
+    [selectionDraft]
+  );
 
   const toggleVisible = useCallback(
     (checked: boolean, visible: readonly { index: string }[]) => {
-      setSelection((current) => {
-        const next = new Set(current);
-        for (const file of visible) {
-          if (checked) next.add(file.index);
-          else next.delete(file.index);
-        }
-        return next;
-      });
-      setDirty(true);
+      selectionDraft.toggle(visible.map((file) => file.index), checked);
+      setSelectionState(selectionDraft.snapshot());
     },
-    []
+    [selectionDraft]
   );
 
   const handleSave = async () => {
@@ -213,15 +171,20 @@ export function TaskDetailDialog({ task, onClose }: TaskDetailDialogProps) {
       toast.info(t("detail.needOneFile"));
       return;
     }
-    setSaving(true);
+    const submitted = selectionDraft.beginSave();
+    if (!submitted) return;
+    setSelectionState(selectionDraft.snapshot());
     try {
-      await selectFiles(gid, [...selection].sort((a, b) => Number(a) - Number(b)));
-      setDirty(false);
+      await selectFiles(gid, submitted.indexes);
+      if (!mountedRef.current) return;
+      selectionDraft.completeSave(submitted);
+      setSelectionState(selectionDraft.snapshot());
       toast.success(t("detail.saved"));
     } catch (error) {
+      if (!mountedRef.current) return;
+      selectionDraft.failSave(submitted);
+      setSelectionState(selectionDraft.snapshot());
       toastError(error);
-    } finally {
-      setSaving(false);
     }
   };
 
@@ -288,6 +251,7 @@ export function TaskDetailDialog({ task, onClose }: TaskDetailDialogProps) {
                         ? "indeterminate"
                         : false
                   }
+                  disabled={visibleFiles.length === 0}
                   onCheckedChange={(checked) =>
                     toggleVisible(checked === true, visibleFiles)
                   }
@@ -362,6 +326,15 @@ export function TaskDetailDialog({ task, onClose }: TaskDetailDialogProps) {
                     <ArrowDown className="size-3.5" />
                   )}
                 </Button>
+                <span
+                  className="ml-auto text-xs tabular-nums text-muted-foreground"
+                  aria-live="polite"
+                >
+                  {t("detail.selectionCount", {
+                    selected: selection.size,
+                    total: files.length,
+                  })}
+                </span>
               </div>
             )}
             {loading ? (
@@ -483,10 +456,10 @@ export function TaskDetailDialog({ task, onClose }: TaskDetailDialogProps) {
           {dirty && (
             <Button
               variant="outline"
+              disabled={saving}
               onClick={() => {
-                setDirty(false);
-                setLoading(files.length === 0);
-                void reload();
+                selectionDraft.discard();
+                setSelectionState(selectionDraft.snapshot());
               }}
             >
               {t("detail.discard")}
@@ -496,11 +469,11 @@ export function TaskDetailDialog({ task, onClose }: TaskDetailDialogProps) {
             onClick={() => (dirty ? void handleSave() : onClose())}
             disabled={saving}
           >
-            {dirty
-              ? saving
-                ? t("detail.saving")
-                : t("detail.save")
-              : t("common.close")}
+            {saving
+              ? t("detail.saving")
+              : dirty
+                ? t("detail.save")
+                : t("common.close")}
           </Button>
         </DialogFooter>
       </DialogContent>
